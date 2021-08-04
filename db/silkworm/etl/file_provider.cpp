@@ -1,5 +1,5 @@
 /*
-   Copyright 2020 The Silkworm Authors
+   Copyright 2020-2021 The Silkworm Authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -16,11 +16,13 @@
 
 #include "file_provider.hpp"
 
-#include <boost/filesystem/operations.hpp>
+#include <filesystem>
+
+#include <silkworm/common/cast.hpp>
 
 namespace silkworm::etl {
 
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 
 // https://abseil.io/tips/117
 FileProvider::FileProvider(std::string file_name, size_t id) : id_{id}, file_name_{std::move(file_name)} {}
@@ -31,7 +33,7 @@ void FileProvider::flush(Buffer &buffer) {
     head_t head{};
 
     // Check we have enough space to store all data
-    auto &entries{buffer.get_entries()};
+    auto entries{buffer.entries()};
     file_size_ = {buffer.size() + entries.size() * sizeof(head_t)};
     fs::path workdir(fs::path(file_name_).parent_path());
     if (fs::space(workdir).available < file_size_) {
@@ -49,9 +51,9 @@ void FileProvider::flush(Buffer &buffer) {
     for (const auto &entry : entries) {
         head.lengths[0] = entry.key.size();
         head.lengths[1] = entry.value.size();
-        if (!file_.write((const char *)head.bytes, 8) ||
-            !file_.write((const char *)entry.key.data(), entry.key.size()) ||
-            !file_.write((const char *)entry.value.data(), entry.value.size())) {
+        if (!file_.write(byte_ptr_cast(head.bytes), 8) ||
+            !file_.write(byte_ptr_cast(entry.key.data()), entry.key.size()) ||
+            !file_.write(byte_ptr_cast(entry.value.data()), entry.value.size())) {
             auto err{errno};
             reset();
             throw etl_error(strerror(err));
@@ -78,14 +80,14 @@ std::optional<std::pair<Entry, int>> FileProvider::read_entry() {
         throw etl_error("Invalid file handle");
     }
 
-    if (!file_.read((char *)head.bytes, 8)) {
+    if (!file_.read(byte_ptr_cast(head.bytes), 8)) {
         reset();
         return std::nullopt;
     }
 
     Entry entry{Bytes(head.lengths[0], '\0'), Bytes(head.lengths[1], '\0')};
-    if (!file_.read((char *)entry.key.data(), head.lengths[0]) ||
-        !file_.read((char *)entry.value.data(), head.lengths[1])) {
+    if (!file_.read(byte_ptr_cast(entry.key.data()), head.lengths[0]) ||
+        !file_.read(byte_ptr_cast(entry.value.data()), head.lengths[1])) {
         auto err{errno};
         reset();
         throw etl_error(strerror(err));

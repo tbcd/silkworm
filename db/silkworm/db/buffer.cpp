@@ -16,10 +16,11 @@
 
 #include "buffer.hpp"
 
-#include <absl/container/btree_set.h>
-
 #include <algorithm>
+
+#include <absl/container/btree_set.h>
 #include <boost/endian/conversion.hpp>
+
 #include <silkworm/common/util.hpp>
 
 #include "access_layer.hpp"
@@ -28,7 +29,7 @@
 namespace silkworm::db {
 
 void Buffer::bump_batch_size(size_t key_len, size_t value_len) {
-    // Approximately matches TG batch size logic in (m *mutation) Put
+    // Approximately matches Erigon's batch size logic in (m *mutation) Put
     static constexpr size_t kEntryOverhead{8};
     batch_size_ += kEntryOverhead + key_len + value_len;
 }
@@ -44,7 +45,7 @@ void Buffer::update_account(const evmc::address& address, std::optional<Account>
     bool account_deleted{!current};
 
     if (equal && !account_deleted && !changed_storage_.contains(address)) {
-        // Follows the Turbo-Geth logic when to populate account changes.
+        // Follows the Erigon logic when to populate account changes.
         // See (ChangeSetWriter)UpdateAccountData & DeleteAccount.
         return;
     }
@@ -75,10 +76,13 @@ void Buffer::update_account(const evmc::address& address, std::optional<Account>
 
 void Buffer::update_account_code(const evmc::address& address, uint64_t incarnation, const evmc::bytes32& code_hash,
                                  ByteView code) {
-    if (hash_to_code_.insert_or_assign(code_hash, code).second) {
+    // Don't overwrite already existing code so that views of it
+    // that were previously returned by read_code() are still valid.
+    if (hash_to_code_.try_emplace(code_hash, code).second) {
         bump_batch_size(kHashLength, code.length());
     }
-    if (storage_prefix_to_code_hash_.insert_or_assign(storage_prefix(address, incarnation), code_hash).second) {
+    if (storage_prefix_to_code_hash_.insert_or_assign(storage_prefix(full_view(address), incarnation), code_hash)
+            .second) {
         bump_batch_size(kStoragePrefixLength, kHashLength);
     }
 }
@@ -99,18 +103,53 @@ void Buffer::update_storage(const evmc::address& address, uint64_t incarnation, 
     }
 }
 
-static void upsert_storage_value(lmdb::Table& state_table, ByteView storage_prefix, const evmc::bytes32& location,
+evmc::bytes32 Buffer::account_storage_root(const evmc::address& address, uint64_t incarnation) const {
+    auto it1{storage_.find(address)};
+    if (it1 == storage_.end()) {
+        return kEmptyRoot;
+    }
+
+    auto it2{it1->second.find(incarnation)};
+    if (it2 == it1->second.end()) {
+        return kEmptyRoot;
+    }
+
+    const auto& storage{it2->second};
+    if (storage.empty()) {
+        return kEmptyRoot;
+    }
+
+    std::map<evmc::bytes32, Bytes> storage_rlp;
+    Bytes rlp;
+    for (const auto& [location, value] : storage) {
+        ethash::hash256 hash{keccak256(full_view(location))};
+        rlp.clear();
+        rlp::encode(rlp, zeroless_view(value));
+        storage_rlp[to_bytes32(full_view(hash.bytes))] = rlp;
+    }
+
+    trie::HashBuilder hb;
+    for (const auto& [hash, rlp] : storage_rlp) {
+        hb.add(full_view(hash), rlp);
+    }
+
+    return hb.root_hash();
+}
+
+static void upsert_storage_value(mdbx::cursor& state_cursor, ByteView storage_prefix, const evmc::bytes32& location,
                                  const evmc::bytes32& value) {
-    state_table.del(storage_prefix, full_view(location));
+    if (find_value_suffix(state_cursor, storage_prefix, full_view(location)) != std::nullopt) {
+        state_cursor.erase();
+    }
     if (!is_zero(value)) {
         Bytes data{full_view(location)};
         data.append(zeroless_view(value));
-        state_table.put(storage_prefix, data);
+        state_cursor.upsert(to_slice(storage_prefix), to_slice(data));
     }
 }
 
 void Buffer::write_to_state_table() {
-    auto state_table{txn_->open(table::kPlainState)};
+    auto state_table{db::open_cursor(txn_, table::kPlainState)};
 
     // sort before inserting into the DB
     absl::btree_set<evmc::address> addresses;
@@ -125,18 +164,19 @@ void Buffer::write_to_state_table() {
 
     for (const auto& address : addresses) {
         if (auto it{accounts_.find(address)}; it != accounts_.end()) {
-            state_table->del(full_view(address));
+            if (state_table.seek(to_slice(address))) {
+                state_table.erase();
+            }
             if (it->second.has_value()) {
-                bool omit_code_hash{false};
-                Bytes encoded{it->second->encode_for_storage(omit_code_hash)};
-                state_table->put(full_view(address), encoded);
+                Bytes encoded{it->second->encode_for_storage()};
+                state_table.upsert(to_slice(full_view(address)), to_slice(encoded));
             }
         }
 
         if (auto it{storage_.find(address)}; it != storage_.end()) {
             for (const auto& contract : it->second) {
                 uint64_t incarnation{contract.first};
-                Bytes prefix{storage_prefix(address, incarnation)};
+                Bytes prefix{storage_prefix(full_view(address), incarnation)};
 
                 const auto& contract_storage{contract.second};
 
@@ -148,7 +188,7 @@ void Buffer::write_to_state_table() {
                 std::sort(storage_keys.begin(), storage_keys.end());
 
                 for (const auto& k : storage_keys) {
-                    upsert_storage_value(*state_table, prefix, k, contract_storage.at(k));
+                    upsert_storage_value(state_table, prefix, k, contract_storage.at(k));
                 }
             }
         }
@@ -156,30 +196,26 @@ void Buffer::write_to_state_table() {
 }
 
 void Buffer::write_to_db() {
-    if (!txn_) {
-        return;
-    }
-
     write_to_state_table();
 
-    auto incarnation_table{txn_->open(table::kIncarnationMap)};
+    auto incarnation_table{db::open_cursor(txn_, table::kIncarnationMap)};
     Bytes data(kIncarnationLength, '\0');
     for (const auto& entry : incarnations_) {
         boost::endian::store_big_u64(&data[0], entry.second);
-        incarnation_table->put(full_view(entry.first), data);
+        incarnation_table.upsert(to_slice(entry.first), to_slice(data));
     }
 
-    auto code_table{txn_->open(table::kCode)};
+    auto code_table{db::open_cursor(txn_, table::kCode)};
     for (const auto& entry : hash_to_code_) {
-        code_table->put(full_view(entry.first), entry.second);
+        code_table.upsert(to_slice(entry.first), to_slice(entry.second));
     }
 
-    auto code_hash_table{txn_->open(table::kPlainContractCode)};
+    auto code_hash_table{db::open_cursor(txn_, table::kPlainContractCode)};
     for (const auto& entry : storage_prefix_to_code_hash_) {
-        code_hash_table->put(entry.first, full_view(entry.second));
+        code_hash_table.upsert(to_slice(entry.first), to_slice(full_view(entry.second)));
     }
 
-    auto account_change_table{txn_->open(table::kPlainAccountChangeSet)};
+    auto account_change_table{db::open_cursor(txn_, table::kPlainAccountChangeSet)};
     Bytes change_key;
     for (const auto& block_entry : account_changes_) {
         uint64_t block_num{block_entry.first};
@@ -187,11 +223,11 @@ void Buffer::write_to_db() {
         for (const auto& account_entry : block_entry.second) {
             data = full_view(account_entry.first);
             data.append(account_entry.second);
-            account_change_table->put(change_key, data);
+            account_change_table.upsert(to_slice(change_key), to_slice(data));
         }
     }
 
-    auto storage_change_table{txn_->open(table::kPlainStorageChangeSet)};
+    auto storage_change_table{db::open_cursor(txn_, table::kPlainStorageChangeSet)};
     for (const auto& block_entry : storage_changes_) {
         uint64_t block_num{block_entry.first};
         for (const auto& address_entry : block_entry.second) {
@@ -202,14 +238,33 @@ void Buffer::write_to_db() {
                 for (const auto& storage_entry : incarnation_entry.second) {
                     data = full_view(storage_entry.first);
                     data.append(storage_entry.second);
-                    storage_change_table->put(change_key, data);
+                    storage_change_table.upsert(to_slice(change_key), to_slice(data));
                 }
             }
         }
     }
 }
 
-evmc::bytes32 Buffer::state_root_hash() const { throw std::runtime_error("not yet implemented"); }
+evmc::bytes32 Buffer::state_root_hash() const {
+    if (accounts_.empty()) {
+        return kEmptyRoot;
+    }
+
+    std::map<evmc::bytes32, Bytes> account_rlp;
+    for (const auto& [address, account] : accounts_) {
+        if (account.has_value()) {
+            ethash::hash256 hash{keccak256(full_view(address))};
+            evmc::bytes32 storage_root{account_storage_root(address, account->incarnation)};
+            account_rlp[to_bytes32(full_view(hash.bytes))] = account->rlp(storage_root);
+        }
+    }
+
+    trie::HashBuilder hb;
+    for (const auto& [hash, rlp] : account_rlp) {
+        hb.add(full_view(hash), rlp);
+    }
+    return hb.root_hash();
+}
 
 uint64_t Buffer::current_canonical_block() const { throw std::runtime_error("not yet implemented"); }
 
@@ -240,10 +295,7 @@ std::optional<intx::uint256> Buffer::total_difficulty(uint64_t block_number,
     if (auto it{difficulty_.find(key)}; it != difficulty_.end()) {
         return it->second;
     }
-    if (!txn_) {
-        return std::nullopt;
-    }
-    return db::read_total_difficulty(*txn_, block_number, block_hash.bytes);
+    return db::read_total_difficulty(txn_, block_number, block_hash.bytes);
 }
 
 std::optional<BlockHeader> Buffer::read_header(uint64_t block_number, const evmc::bytes32& block_hash) const noexcept {
@@ -251,10 +303,7 @@ std::optional<BlockHeader> Buffer::read_header(uint64_t block_number, const evmc
     if (auto it{headers_.find(key)}; it != headers_.end()) {
         return it->second;
     }
-    if (!txn_) {
-        return std::nullopt;
-    }
-    return db::read_header(*txn_, block_number, block_hash.bytes);
+    return db::read_header(txn_, block_number, block_hash.bytes);
 }
 
 std::optional<BlockBody> Buffer::read_body(uint64_t block_number, const evmc::bytes32& block_hash) const noexcept {
@@ -262,31 +311,22 @@ std::optional<BlockBody> Buffer::read_body(uint64_t block_number, const evmc::by
     if (auto it{bodies_.find(key)}; it != bodies_.end()) {
         return it->second;
     }
-    if (!txn_) {
-        return std::nullopt;
-    }
-    return db::read_body(*txn_, block_number, block_hash.bytes, /*read_senders=*/false);
+    return db::read_body(txn_, block_number, block_hash.bytes, /*read_senders=*/false);
 }
 
 std::optional<Account> Buffer::read_account(const evmc::address& address) const noexcept {
     if (auto it{accounts_.find(address)}; it != accounts_.end()) {
         return it->second;
     }
-    if (!txn_) {
-        return std::nullopt;
-    }
-    return db::read_account(*txn_, address, historical_block_);
+    return db::read_account(txn_, address, historical_block_);
 }
 
-Bytes Buffer::read_code(const evmc::bytes32& code_hash) const noexcept {
+ByteView Buffer::read_code(const evmc::bytes32& code_hash) const noexcept {
     if (auto it{hash_to_code_.find(code_hash)}; it != hash_to_code_.end()) {
         return it->second;
     }
-    if (!txn_) {
-        return {};
-    }
-    std::optional<Bytes> code{db::read_code(*txn_, code_hash)};
-    if (code) {
+    std::optional<ByteView> code{db::read_code(txn_, code_hash)};
+    if (code.has_value()) {
         return *code;
     } else {
         return {};
@@ -303,20 +343,14 @@ evmc::bytes32 Buffer::read_storage(const evmc::address& address, uint64_t incarn
         }
     }
 
-    if (!txn_) {
-        return {};
-    }
-    return db::read_storage(*txn_, address, incarnation, location, historical_block_);
+    return db::read_storage(txn_, address, incarnation, location, historical_block_);
 }
 
 uint64_t Buffer::previous_incarnation(const evmc::address& address) const noexcept {
     if (auto it{incarnations_.find(address)}; it != incarnations_.end()) {
         return it->second;
     }
-    if (!txn_) {
-        return 0;
-    }
-    std::optional<uint64_t> incarnation{db::read_previous_incarnation(*txn_, address, historical_block_)};
+    std::optional<uint64_t> incarnation{db::read_previous_incarnation(txn_, address, historical_block_)};
     return incarnation ? *incarnation : 0;
 }
 

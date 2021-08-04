@@ -17,17 +17,31 @@
 #include "block.hpp"
 
 #include <cstring>
+
+#include <silkworm/common/cast.hpp>
 #include <silkworm/rlp/encode.hpp>
 
 namespace silkworm {
 
-evmc::bytes32 BlockHeader::hash() const {
+evmc::bytes32 BlockHeader::hash(bool for_sealing) const {
     Bytes rlp;
-    rlp::encode(rlp, *this);
-    ethash::hash256 ethash_hash{keccak256(rlp)};
-    evmc::bytes32 hash;
-    std::memcpy(hash.bytes, ethash_hash.bytes, kHashLength);
-    return hash;
+    rlp::encode(rlp, *this, for_sealing);
+    return bit_cast<evmc_bytes32>(keccak256(rlp));
+}
+
+ethash::hash256 BlockHeader::boundary() const {
+    static intx::uint256 dividend{
+        intx::from_string<intx::uint256>("0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff")};
+
+    ethash::hash256 ret{};
+
+    if (difficulty > 1u) {
+        auto result{intx::bswap(dividend / difficulty)};
+        std::memcpy(ret.bytes, intx::as_bytes(result), 32);
+    } else {
+        std::memcpy(ret.bytes, intx::as_bytes(dividend), 32);
+    }
+    return ret;
 }
 
 bool operator==(const BlockHeader& a, const BlockHeader& b) {
@@ -35,41 +49,45 @@ bool operator==(const BlockHeader& a, const BlockHeader& b) {
            a.state_root == b.state_root && a.transactions_root == b.transactions_root &&
            a.receipts_root == b.receipts_root && a.logs_bloom == b.logs_bloom && a.difficulty == b.difficulty &&
            a.number == b.number && a.gas_limit == b.gas_limit && a.gas_used == b.gas_used &&
-           a.timestamp == b.timestamp && a.extra_data() == b.extra_data() && a.mix_hash == b.mix_hash &&
-           a.nonce == b.nonce;
+           a.timestamp == b.timestamp && a.extra_data == b.extra_data && a.mix_hash == b.mix_hash &&
+           a.nonce == b.nonce && a.base_fee_per_gas == b.base_fee_per_gas;
 }
 
 bool operator==(const BlockBody& a, const BlockBody& b) {
     return a.transactions == b.transactions && a.ommers == b.ommers;
 }
 
-void Block::recover_senders(const ChainConfig& config) {
-    uint64_t block_number{header.number};
-    bool homestead{config.has_homestead(block_number)};
-    bool spurious_dragon{config.has_spurious_dragon(block_number)};
-
+void Block::recover_senders() {
     for (Transaction& txn : transactions) {
-        if (spurious_dragon) {
-            txn.recover_sender(homestead, config.chain_id);
-        } else {
-            txn.recover_sender(homestead, std::nullopt);
-        }
+        txn.recover_sender();
     }
 }
 
 namespace rlp {
 
-    static Header rlp_header(const BlockHeader& header) {
-        Header rlp_head{true, 6 * (kHashLength + 1)};
-        rlp_head.payload_length += kAddressLength + 1;  // beneficiary
-        rlp_head.payload_length += kBloomByteLength + length_of_length(kBloomByteLength);
-        rlp_head.payload_length += length(header.difficulty);
-        rlp_head.payload_length += length(header.number);
-        rlp_head.payload_length += length(header.gas_limit);
-        rlp_head.payload_length += length(header.gas_used);
-        rlp_head.payload_length += length(header.timestamp);
-        rlp_head.payload_length += length(header.extra_data());
-        rlp_head.payload_length += 8 + 1;  // nonce
+    // Computes the length of the RLP payload
+    static Header rlp_header(const BlockHeader& header, bool for_sealing = false) {
+        Header rlp_head{true, 0};
+        rlp_head.payload_length += kHashLength + 1;                                        // parent_hash
+        rlp_head.payload_length += kHashLength + 1;                                        // ommers_hash
+        rlp_head.payload_length += kAddressLength + 1;                                     // beneficiary
+        rlp_head.payload_length += kHashLength + 1;                                        // state_root
+        rlp_head.payload_length += kHashLength + 1;                                        // transactions_root
+        rlp_head.payload_length += kHashLength + 1;                                        // receipts_root
+        rlp_head.payload_length += kBloomByteLength + length_of_length(kBloomByteLength);  // logs_bloom
+        rlp_head.payload_length += length(header.difficulty);                              // difficulty
+        rlp_head.payload_length += length(header.number);                                  // block height
+        rlp_head.payload_length += length(header.gas_limit);                               // gas_limit
+        rlp_head.payload_length += length(header.gas_used);                                // gas_used
+        rlp_head.payload_length += length(header.timestamp);                               // timestamp
+        rlp_head.payload_length += length(header.extra_data);                              // extra_data
+        if (!for_sealing) {
+            rlp_head.payload_length += kHashLength + 1;  // mix_hash
+            rlp_head.payload_length += 8 + 1;            // nonce
+        }
+        if (header.base_fee_per_gas.has_value()) {
+            rlp_head.payload_length += length(*header.base_fee_per_gas);
+        }
         return rlp_head;
     }
 
@@ -78,8 +96,8 @@ namespace rlp {
         return length_of_length(rlp_head.payload_length) + rlp_head.payload_length;
     }
 
-    void encode(Bytes& to, const BlockHeader& header) {
-        encode_header(to, rlp_header(header));
+    void encode(Bytes& to, const BlockHeader& header, bool for_sealing) {
+        encode_header(to, rlp_header(header, for_sealing));
         encode(to, header.parent_hash.bytes);
         encode(to, header.ommers_hash.bytes);
         encode(to, header.beneficiary.bytes);
@@ -92,9 +110,14 @@ namespace rlp {
         encode(to, header.gas_limit);
         encode(to, header.gas_used);
         encode(to, header.timestamp);
-        encode(to, header.extra_data());
-        encode(to, header.mix_hash.bytes);
-        encode(to, header.nonce);
+        encode(to, header.extra_data);
+        if (!for_sealing) {
+            encode(to, header.mix_hash.bytes);
+            encode(to, header.nonce);
+        }
+        if (header.base_fee_per_gas.has_value()) {
+            encode(to, *header.base_fee_per_gas);
+        }
     }
 
     template <>
@@ -144,26 +167,23 @@ namespace rlp {
         if (DecodingResult err{decode(from, to.timestamp)}; err != DecodingResult::kOk) {
             return err;
         }
-
-        auto [extra_data_head, err2]{decode_header(from)};
-        if (err2 != DecodingResult::kOk) {
-            return err2;
+        if (DecodingResult err{decode(from, to.extra_data)}; err != DecodingResult::kOk) {
+            return err;
         }
-        if (extra_data_head.list) {
-            return DecodingResult::kUnexpectedList;
-        }
-        if (extra_data_head.payload_length > 32) {
-            return DecodingResult::kUnexpectedLength;
-        }
-        to.extra_data_size_ = static_cast<uint32_t>(extra_data_head.payload_length);
-        std::memcpy(to.extra_data_.bytes, from.data(), to.extra_data_size_);
-        from.remove_prefix(to.extra_data_size_);
-
         if (DecodingResult err{decode(from, to.mix_hash.bytes)}; err != DecodingResult::kOk) {
             return err;
         }
         if (DecodingResult err{decode(from, to.nonce)}; err != DecodingResult::kOk) {
             return err;
+        }
+
+        to.base_fee_per_gas = std::nullopt;
+        if (from.length() > leftover) {
+            intx::uint256 base_fee_per_gas;
+            if (DecodingResult err{decode(from, base_fee_per_gas)}; err != DecodingResult::kOk) {
+                return err;
+            }
+            to.base_fee_per_gas = base_fee_per_gas;
         }
 
         return from.length() == leftover ? DecodingResult::kOk : DecodingResult::kListLengthMismatch;
@@ -189,10 +209,10 @@ namespace rlp {
         }
         uint64_t leftover{from.length() - rlp_head.payload_length};
 
-        if (DecodingResult err{decode_vector(from, to.transactions)}; err != DecodingResult::kOk) {
+        if (err = decode_vector(from, to.transactions); err != DecodingResult::kOk) {
             return err;
         }
-        if (DecodingResult err{decode_vector(from, to.ommers)}; err != DecodingResult::kOk) {
+        if (err = decode_vector(from, to.ommers); err != DecodingResult::kOk) {
             return err;
         }
 
@@ -210,13 +230,13 @@ namespace rlp {
         }
         uint64_t leftover{from.length() - rlp_head.payload_length};
 
-        if (DecodingResult err{decode(from, to.header)}; err != DecodingResult::kOk) {
+        if (err = decode(from, to.header); err != DecodingResult::kOk) {
             return err;
         }
-        if (DecodingResult err{decode_vector(from, to.transactions)}; err != DecodingResult::kOk) {
+        if (err = decode_vector(from, to.transactions); err != DecodingResult::kOk) {
             return err;
         }
-        if (DecodingResult err{decode_vector(from, to.ommers)}; err != DecodingResult::kOk) {
+        if (err = decode_vector(from, to.ommers); err != DecodingResult::kOk) {
             return err;
         }
 

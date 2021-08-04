@@ -1,5 +1,5 @@
 /*
-   Copyright 2020 The Silkworm Authors
+   Copyright 2020-2021 The Silkworm Authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -14,39 +14,38 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_EXECUTION_EVM_H_
-#define SILKWORM_EXECUTION_EVM_H_
+#ifndef SILKWORM_EXECUTION_EVM_HPP_
+#define SILKWORM_EXECUTION_EVM_HPP_
 
-#include <stdint.h>
+#include <stack>
+#include <vector>
 
-#include <evmc/evmc.hpp>
 #include <intx/intx.hpp>
+
 #include <silkworm/chain/config.hpp>
+#include <silkworm/common/util.hpp>
 #include <silkworm/execution/analysis_cache.hpp>
 #include <silkworm/execution/state_pool.hpp>
 #include <silkworm/state/intra_block_state.hpp>
 #include <silkworm/types/block.hpp>
-#include <stack>
-#include <vector>
-
-// TODO(Andrew) get rid of this when
-// https://github.com/ethereum/evmc/pull/528
-// is merged and released
-enum evmc_status_code_extra { EVMC_BALANCE_TOO_LOW = 32 };
 
 namespace silkworm {
 
 struct CallResult {
     evmc_status_code status{EVMC_SUCCESS};
     uint64_t gas_left{0};
+    Bytes data;
 };
 
 class EVM {
   public:
+    // Not copyable nor movable
     EVM(const EVM&) = delete;
     EVM& operator=(const EVM&) = delete;
 
-    EVM(const Block& block, IntraBlockState& state, const ChainConfig& config = kMainnetConfig) noexcept;
+    EVM(const Block& block, IntraBlockState& state, const ChainConfig& config) noexcept;
+
+    ~EVM();
 
     const Block& block() const noexcept { return block_; }
 
@@ -55,11 +54,17 @@ class EVM {
     IntraBlockState& state() noexcept { return state_; }
     const IntraBlockState& state() const noexcept { return state_; }
 
+    // Precondition: txn.from must be recovered
     CallResult execute(const Transaction& txn, uint64_t gas) noexcept;
 
-    AnalysisCache* analysis_cache{nullptr};  // use for better performance
+    evmc_revision revision() const noexcept;
+
+    // Point to a cache instance in order to enable execution with evmone advanced rather than baseline interpreter
+    AnalysisCache* advanced_analysis_cache{nullptr};
 
     ExecutionStatePool* state_pool{nullptr};  // use for better performance
+
+    evmc_vm* exo_evm{nullptr};  // it's possible to use an exogenous EVMC VM
 
   private:
     friend class EvmHost;
@@ -68,9 +73,15 @@ class EVM {
 
     evmc::result call(const evmc_message& message) noexcept;
 
+    evmc_address recipient_of_call_message(const evmc_message& message) noexcept;
+
     evmc::result execute(const evmc_message& message, ByteView code, std::optional<evmc::bytes32> code_hash) noexcept;
 
-    evmc_revision revision() const noexcept;
+    evmc_result execute_with_baseline_interpreter(evmc_revision rev, const evmc_message& message,
+                                                  ByteView code) noexcept;
+
+    evmc_result execute_with_default_interpreter(evmc_revision rev, const evmc_message& message, ByteView code,
+                                                 std::optional<evmc::bytes32> code_hash) noexcept;
 
     uint8_t number_of_precompiles() const noexcept;
     bool is_precompiled(const evmc::address& contract) const noexcept;
@@ -81,6 +92,7 @@ class EVM {
     const Transaction* txn_{nullptr};
     std::vector<evmc::bytes32> block_hashes_{};
     std::stack<evmc::address> address_stack_{};
+    evmc_vm* evm1_{nullptr};
 };
 
 class EvmHost : public evmc::Host {
@@ -88,6 +100,10 @@ class EvmHost : public evmc::Host {
     explicit EvmHost(EVM& evm) noexcept : evm_{evm} {}
 
     bool account_exists(const evmc::address& address) const noexcept override;
+
+    evmc_access_status access_account(const evmc::address& address) noexcept override;
+
+    evmc_access_status access_storage(const evmc::address& address, const evmc::bytes32& key) noexcept override;
 
     evmc::bytes32 get_storage(const evmc::address& address, const evmc::bytes32& key) const noexcept override;
 
@@ -117,6 +133,7 @@ class EvmHost : public evmc::Host {
   private:
     EVM& evm_;
 };
+
 }  // namespace silkworm
 
-#endif  // SILKWORM_EXECUTION_EVM_H_
+#endif  // SILKWORM_EXECUTION_EVM_HPP_

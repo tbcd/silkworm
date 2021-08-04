@@ -16,128 +16,247 @@
 
 #include "access_layer.hpp"
 
-#include <boost/endian/conversion.hpp>
 #include <cassert>
+
+#include <boost/endian/conversion.hpp>
+#include <nlohmann/json.hpp>
+
 #include <silkworm/types/log_cbor.hpp>
 #include <silkworm/types/receipt_cbor.hpp>
 
-#include "history_index.hpp"
+#include "bitmap.hpp"
 #include "tables.hpp"
 
 namespace silkworm::db {
 
-static void check_rlp_err(rlp::DecodingResult err) {
-    if (err != rlp::DecodingResult::kOk) {
-        throw err;
+std::optional<VersionBase> read_schema_version(mdbx::txn& txn) noexcept {
+    auto src{db::open_cursor(txn, table::kDatabaseInfo)};
+    auto key{to_slice(byte_view_of_c_str(kDbSchemaVersionKey))};
+    if (!src.seek(key)) {
+        return std::nullopt;
     }
+
+    auto data{src.current()};
+    assert(data.value.length() == 12);
+    auto Major{boost::endian::load_big_u32(static_cast<uint8_t*>(data.value.iov_base))};
+    data.value.remove_prefix(sizeof(uint32_t));
+    auto Minor{boost::endian::load_big_u32(static_cast<uint8_t*>(data.value.iov_base))};
+    data.value.remove_prefix(sizeof(uint32_t));
+    auto Patch{boost::endian::load_big_u32(static_cast<uint8_t*>(data.value.iov_base))};
+    return VersionBase{Major, Minor, Patch};
 }
 
-std::optional<BlockHeader> read_header(lmdb::Transaction& txn, uint64_t block_number,
-                                       const uint8_t (&hash)[kHashLength]) {
-    auto table{txn.open(table::kBlockHeaders)};
-    std::optional<ByteView> rlp{table->get(block_key(block_number, hash))};
-    if (!rlp) {
+void write_schema_version(mdbx::txn& txn, VersionBase& schema_version) {
+    auto old_schema_version{read_schema_version(txn)};
+    if (old_schema_version.has_value()) {
+        if (schema_version == old_schema_version.value()) {
+            // Simply return. No changes
+            return;
+        }
+        if (schema_version < old_schema_version.value()) {
+            throw std::runtime_error("Cannot downgrade schema version");
+        }
+    }
+    Bytes value(12, '\0');
+    boost::endian::store_big_u32(&value[0], schema_version.Major);
+    boost::endian::store_big_u32(&value[4], schema_version.Minor);
+    boost::endian::store_big_u32(&value[8], schema_version.Patch);
+    auto k{to_slice(byte_view_of_c_str(kDbSchemaVersionKey))};
+    auto v{to_slice(value)};
+    auto src{db::open_cursor(txn, table::kDatabaseInfo)};
+    src.upsert(k, v);
+}
+
+StorageMode read_storage_mode(mdbx::txn& txn) noexcept {
+    StorageMode ret{true};
+    auto src{db::open_cursor(txn, table::kDatabaseInfo)};
+
+    // History
+    auto key{db::to_slice(byte_view_of_c_str(kStorageModeHistoryKey))};
+    auto data{src.find(key, /*throw_notfound*/ false)};
+    ret.History = (data.done && data.value.length() == 1 && data.value.at(0) == 1);
+
+    // Receipts
+    key = db::to_slice(byte_view_of_c_str(kStorageModeReceiptsKey));
+    data = src.find(key, /*throw_notfound*/ false);
+    ret.Receipts = (data.done && data.value.length() == 1 && data.value.at(0) == 1);
+
+    // TxIndex
+    key = db::to_slice(byte_view_of_c_str(kStorageModeTxIndexKey));
+    data = src.find(key, /*throw_notfound*/ false);
+    ret.TxIndex = (data.done && data.value.length() == 1 && data.value.at(0) == 1);
+
+    // Call Traces
+    key = db::to_slice(byte_view_of_c_str(kStorageModeCallTracesKey));
+    data = src.find(key, /*throw_notfound*/ false);
+    ret.CallTraces = (data.done && data.value.length() == 1 && data.value.at(0) == 1);
+
+    // TEVM
+    key = db::to_slice(byte_view_of_c_str(kStorageModeTEVMKey));
+    data = src.find(key, /*throw_notfound*/ false);
+    ret.TEVM = (data.done && data.value.length() == 1 && data.value.at(0) == 1);
+
+    return ret;
+}
+
+void write_storage_mode(mdbx::txn& txn, const StorageMode& val) {
+    auto target{db::open_cursor(txn, table::kDatabaseInfo)};
+    Bytes v_on(1, '\1');
+    Bytes v_off(2, '\0');
+
+    auto k{byte_view_of_c_str(kStorageModeHistoryKey)};
+    target.upsert(to_slice(k), to_slice(val.History ? v_on : v_off));
+
+    k = byte_view_of_c_str(kStorageModeReceiptsKey);
+    target.upsert(to_slice(k), to_slice(val.Receipts ? v_on : v_off));
+
+    k = byte_view_of_c_str(kStorageModeTxIndexKey);
+    target.upsert(to_slice(k), to_slice(val.TxIndex ? v_on : v_off));
+
+    k = byte_view_of_c_str(kStorageModeCallTracesKey);
+    target.upsert(to_slice(k), to_slice(val.CallTraces ? v_on : v_off));
+
+    k = byte_view_of_c_str(kStorageModeTEVMKey);
+    target.upsert(to_slice(k), to_slice(val.TEVM ? v_on : v_off));
+}
+
+StorageMode parse_storage_mode(std::string& mode) {
+    if (mode == "default") {
+        return kDefaultStorageMode;
+    }
+    StorageMode ret{/*Initialized*/ true};
+    for (auto& c : mode) {
+        switch (c) {
+            case 'h':
+                ret.History = true;
+                break;
+            case 'r':
+                ret.Receipts = true;
+                break;
+            case 't':
+                ret.TxIndex = true;
+                break;
+            case 'c':
+                ret.CallTraces = true;
+                break;
+            case 'e':
+                ret.TEVM = true;
+                break;
+            default:
+                throw std::invalid_argument("Invalid mode");
+        }
+    }
+    return ret;
+}
+
+std::optional<BlockHeader> read_header(mdbx::txn& txn, uint64_t block_number, const uint8_t (&hash)[kHashLength]) {
+    auto src{db::open_cursor(txn, table::kHeaders)};
+    auto key{block_key(block_number, hash)};
+    auto data{src.find(to_slice(key), false)};
+    if (!data) {
         return std::nullopt;
     }
 
     BlockHeader header;
-    check_rlp_err(rlp::decode(*rlp, header));
+    ByteView data_view{from_slice(data.value)};
+    rlp::err_handler(rlp::decode(data_view, header));
     return header;
 }
 
-std::optional<intx::uint256> read_total_difficulty(lmdb::Transaction& txn, uint64_t block_number,
+std::optional<intx::uint256> read_total_difficulty(mdbx::txn& txn, uint64_t block_number,
                                                    const uint8_t (&hash)[kHashLength]) {
-    auto table{txn.open(table::kBlockHeaders)};
-    std::optional<ByteView> rlp{table->get(total_difficulty_key(block_number, hash))};
-    if (!rlp) {
+    auto src{db::open_cursor(txn, table::kDifficulty)};
+    auto key{block_key(block_number, hash)};
+    auto data{src.find(to_slice(key), false)};
+    if (!data) {
         return std::nullopt;
     }
-
     intx::uint256 td{0};
-    check_rlp_err(rlp::decode(*rlp, td));
+    ByteView data_view{from_slice(data.value)};
+    rlp::err_handler(rlp::decode(data_view, td));
     return td;
 }
 
-// TG ReadTransactions
-static std::vector<Transaction> read_transactions(lmdb::Transaction& txn, uint64_t base_id, uint64_t count) {
+// Erigon ReadTransactions
+static std::vector<Transaction> read_transactions(mdbx::txn& txn, uint64_t base_id, uint64_t count) {
     if (!count) {
         return {};
     }
-
-    auto table{txn.open(table::kEthTx)};
-    return read_transactions(*table, base_id, count);
+    auto src{db::open_cursor(txn, table::kEthTx)};
+    return read_transactions(src, base_id, count);
 }
 
-std::vector<Transaction> read_transactions(lmdb::Table& txn_table, uint64_t base_id, uint64_t count) {
+std::vector<Transaction> read_transactions(mdbx::cursor& txn_table, uint64_t base_id, uint64_t count) {
     std::vector<Transaction> v;
     if (count == 0) {
         return v;
     }
     v.reserve(count);
 
-    Bytes txn_key(8, '\0');
-    boost::endian::store_big_u64(txn_key.data(), base_id);
-    MDB_val key_mdb{to_mdb_val(txn_key)};
-    MDB_val data_mdb{};
+    Bytes key(8, '\0');
+    boost::endian::store_big_u64(key.data(), base_id);
 
     uint64_t i{0};
-    for (int rc{txn_table.seek_exact(&key_mdb, &data_mdb)}; rc != MDB_NOTFOUND && i < count;
-         rc = txn_table.get_next(&key_mdb, &data_mdb), ++i) {
-        lmdb::err_handler(rc);
-        ByteView data{from_mdb_val(data_mdb)};
-
+    for (auto data{txn_table.find(to_slice(key), false)}; data.done && i < count;
+         data = txn_table.to_next(/*throw_notfound = */ false), ++i) {
+        ByteView data_view{from_slice(data.value)};
         Transaction eth_txn;
-        check_rlp_err(rlp::decode(data, eth_txn));
+        rlp::err_handler(rlp::decode(data_view, eth_txn));
         v.push_back(eth_txn);
     }
 
     return v;
 }
 
-std::optional<BlockWithHash> read_block(lmdb::Transaction& txn, uint64_t block_number, bool read_senders) {
-    auto header_table{txn.open(table::kBlockHeaders)};
-    std::optional<ByteView> hash{header_table->get(header_hash_key(block_number))};
-    if (!hash) {
+std::optional<BlockWithHash> read_block(mdbx::txn& txn, uint64_t block_number, bool read_senders) {
+    // Locate canonical hash
+    auto src{db::open_cursor(txn, table::kCanonicalHashes)};
+    auto key{block_key(block_number)};
+    auto data{src.find(to_slice(key), false)};
+    if (!data) {
         return std::nullopt;
     }
 
     BlockWithHash bh{};
-    assert(hash->size() == kHashLength);
-    std::memcpy(bh.hash.bytes, hash->data(), kHashLength);
+    assert(data.value.length() == kHashLength);
+    std::memcpy(bh.hash.bytes, data.value.iov_base, kHashLength);
 
-    Bytes key{block_key(block_number, bh.hash.bytes)};
-    std::optional<ByteView> header_rlp{header_table->get(key)};
-    if (!header_rlp) {
+    // Locate header
+    src = db::open_cursor(txn, table::kHeaders);
+    key = block_key(block_number, bh.hash.bytes);
+    data = src.find(to_slice(key), false);
+    if (!data) {
         return std::nullopt;
     }
 
-    check_rlp_err(rlp::decode(*header_rlp, bh.block.header));
+    ByteView data_view(from_slice(data.value));
+    rlp::err_handler(rlp::decode(data_view, bh.block.header));
 
+    // Read body
     std::optional<BlockBody> body{read_body(txn, block_number, bh.hash.bytes, read_senders)};
     if (!body) {
         return std::nullopt;
     }
 
-    bh.block.ommers = body->ommers;
-    bh.block.transactions = body->transactions;
+    std::swap(bh.block.ommers, body->ommers);
+    std::swap(bh.block.transactions, body->transactions);
 
     return bh;
 }
 
-std::optional<BlockBody> read_body(lmdb::Transaction& txn, uint64_t block_number, const uint8_t (&hash)[kHashLength],
+std::optional<BlockBody> read_body(mdbx::txn& txn, uint64_t block_number, const uint8_t (&hash)[kHashLength],
                                    bool read_senders) {
-    Bytes key{block_key(block_number, hash)};
-
-    auto body_table{txn.open(table::kBlockBodies)};
-    std::optional<ByteView> body_rlp{body_table->get(key)};
-    if (!body_rlp) {
+    auto src{db::open_cursor(txn, table::kBlockBodies)};
+    auto key{block_key(block_number, hash)};
+    auto data{src.find(to_slice(key), false)};
+    if (!data) {
         return std::nullopt;
     }
-
-    auto body{detail::decode_stored_block_body(*body_rlp)};
+    ByteView data_view{from_slice(data.value)};
+    auto body{detail::decode_stored_block_body(data_view)};
 
     BlockBody out;
-    out.ommers = body.ommers;
+    std::swap(out.ommers, body.ommers);
     out.transactions = read_transactions(txn, body.base_txn_id, body.txn_count);
 
     if (read_senders) {
@@ -153,254 +272,236 @@ std::optional<BlockBody> read_body(lmdb::Transaction& txn, uint64_t block_number
     return out;
 }
 
-std::vector<evmc::address> read_senders(lmdb::Transaction& txn, int64_t block_number,
-                                        const uint8_t (&hash)[kHashLength]) {
+std::vector<evmc::address> read_senders(mdbx::txn& txn, int64_t block_number, const uint8_t (&hash)[kHashLength]) {
     std::vector<evmc::address> senders{};
-    auto table{txn.open(table::kSenders)};
-    std::optional<ByteView> data{table->get(block_key(block_number, hash))};
-    if (!data) {
-        return senders;
-    }
 
-    assert(data->length() % kAddressLength == 0);
-    senders.resize(data->length() / kAddressLength);
-    std::memcpy(senders.data(), data->data(), data->size());
+    auto src{db::open_cursor(txn, table::kSenders)};
+    auto key{block_key(block_number, hash)};
+    auto data{src.find(to_slice(key), /*throw_notfound = */ false)};
+    if (data) {
+        assert(data.value.length() % kAddressLength == 0);
+        senders.resize(data.value.length() / kAddressLength);
+        std::memcpy(senders.data(), data.value.iov_base, data.value.length());
+    }
     return senders;
 }
 
-std::optional<Bytes> read_code(lmdb::Transaction& txn, const evmc::bytes32& code_hash) {
-    auto table{txn.open(table::kCode)};
-    std::optional<ByteView> val{table->get(full_view(code_hash))};
-    if (!val) {
-        return {};
+std::optional<ByteView> read_code(mdbx::txn& txn, const evmc::bytes32& code_hash) {
+    auto src{db::open_cursor(txn, table::kCode)};
+    auto key{to_slice(full_view(code_hash))};
+    auto data{src.find(key, /*throw_notfound=*/false)};
+    if (!data) {
+        return std::nullopt;
     }
-    return Bytes{*val};
+    return from_slice(data.value);
 }
 
-// TG FindByHistory for account
-static std::optional<ByteView> find_account_in_history(lmdb::Transaction& txn, const evmc::address& address,
-                                                       uint64_t block_number) {
-    auto history_table{txn.open(table::kAccountHistory)};
-    std::optional<Entry> entry{history_table->seek(account_history_key(address, block_number))};
-    if (!entry) {
+// Erigon FindByHistory for account
+static std::optional<ByteView> historical_account(mdbx::txn& txn, const evmc::address& address, uint64_t block_number) {
+    auto history_table{db::open_cursor(txn, table::kAccountHistory)};
+    const Bytes history_key{account_history_key(address, block_number)};
+    const auto data{history_table.lower_bound(to_slice(history_key), /*throw_notfound=*/false)};
+    if (!data || !data.key.starts_with(to_slice(address))) {
         return std::nullopt;
     }
 
-    ByteView k{entry->key};
-    if (!has_prefix(k, full_view(address))) {
+    const auto bitmap{bitmap::read(from_slice(data.value))};
+    const auto change_block{bitmap::seek(bitmap, block_number)};
+    if (!change_block) {
         return std::nullopt;
     }
 
-    std::optional<history_index::SearchResult> res{history_index::find(entry->value, block_number)};
-    if (!res) {
-        return std::nullopt;
-    }
-
-    if (res->new_record) {
-        return ByteView{};
-    }
-
-    auto change_table{txn.open(table::kPlainAccountChangeSet)};
-    uint64_t change_block{res->change_block};
-    return change_table->get(block_key(change_block), full_view(address));
+    auto change_set_table{db::open_cursor(txn, table::kPlainAccountChangeSet)};
+    const Bytes change_set_key{block_key(*change_block)};
+    return find_value_suffix(change_set_table, change_set_key, full_view(address));
 }
 
-// TG FindByHistory for storage
-static std::optional<ByteView> find_storage_in_history(lmdb::Transaction& txn, const evmc::address& address,
-                                                       uint64_t incarnation, const evmc::bytes32& location,
-                                                       uint64_t block_number) {
-    auto history_table{txn.open(table::kStorageHistory)};
-    std::optional<Entry> entry{history_table->seek(storage_history_key(address, location, block_number))};
-    if (!entry) {
+// Erigon FindByHistory for storage
+static std::optional<ByteView> historical_storage(mdbx::txn& txn, const evmc::address& address, uint64_t incarnation,
+                                                  const evmc::bytes32& location, uint64_t block_number) {
+    auto history_table{db::open_cursor(txn, table::kStorageHistory)};
+    const Bytes history_key{storage_history_key(address, location, block_number)};
+    const auto data{history_table.lower_bound(to_slice(history_key), /*throw_notfound=*/false)};
+    if (!data) {
         return std::nullopt;
     }
 
-    ByteView k{entry->key};
+    const ByteView k{from_slice(data.key)};
     if (k.substr(0, kAddressLength) != full_view(address) ||
         k.substr(kAddressLength, kHashLength) != full_view(location)) {
         return std::nullopt;
     }
 
-    std::optional<history_index::SearchResult> res{history_index::find(entry->value, block_number)};
-    if (!res) {
+    const auto bitmap{bitmap::read(from_slice(data.value))};
+    const auto change_block{bitmap::seek(bitmap, block_number)};
+    if (!change_block) {
         return std::nullopt;
     }
 
-    auto change_table{txn.open(table::kPlainStorageChangeSet)};
-    uint64_t change_block{res->change_block};
-    return change_table->get(storage_change_key(change_block, address, incarnation), full_view(location));
+    auto change_set_table{db::open_cursor(txn, table::kPlainStorageChangeSet)};
+    const Bytes change_set_key{storage_change_key(*change_block, address, incarnation)};
+    return find_value_suffix(change_set_table, change_set_key, full_view(location));
 }
 
-std::optional<Account> read_account(lmdb::Transaction& txn, const evmc::address& address,
-                                    std::optional<uint64_t> block_num) {
-    std::optional<ByteView> encoded{};
-    if (block_num) {
-        encoded = find_account_in_history(txn, address, *block_num);
+std::optional<Account> read_account(mdbx::txn& txn, const evmc::address& address, std::optional<uint64_t> block_num) {
+    std::optional<ByteView> encoded{block_num.has_value() ? historical_account(txn, address, block_num.value())
+                                                          : std::nullopt};
+
+    if (!encoded.has_value()) {
+        auto src{db::open_cursor(txn, table::kPlainState)};
+        if (auto data{src.find({address.bytes, sizeof(evmc::address)}, false)}; data.done) {
+            encoded.emplace(from_slice(data.value));
+        }
     }
-    if (!encoded) {
-        auto state_table{txn.open(table::kPlainState)};
-        encoded = state_table->get(full_view(address));
-    }
-    if (!encoded || encoded->empty()) {
-        return {};
+    if (!encoded.has_value() || encoded->empty()) {
+        return std::nullopt;
     }
 
-    auto [acc, err]{decode_account_from_storage(*encoded)};
-    check_rlp_err(err);
+    auto [acc, err]{decode_account_from_storage(encoded.value())};
+    rlp::err_handler(err);
 
     if (acc.incarnation > 0 && acc.code_hash == kEmptyHash) {
         // restore code hash
-        auto code_hash_table{txn.open(table::kPlainContractCode)};
-        std::optional<ByteView> hash{code_hash_table->get(storage_prefix(address, acc.incarnation))};
-        if (hash && hash->length() == kHashLength) {
-            std::memcpy(acc.code_hash.bytes, hash->data(), kHashLength);
+        auto src{db::open_cursor(txn, table::kPlainContractCode)};
+        auto key{storage_prefix(full_view(address), acc.incarnation)};
+        if (auto data{src.find(to_slice(key), /*throw_notfound*/ false)};
+            data.done && data.value.length() == kHashLength) {
+            std::memcpy(acc.code_hash.bytes, data.value.iov_base, kHashLength);
         }
     }
 
     return acc;
 }
 
-evmc::bytes32 read_storage(lmdb::Transaction& txn, const evmc::address& address, uint64_t incarnation,
+evmc::bytes32 read_storage(mdbx::txn& txn, const evmc::address& address, uint64_t incarnation,
                            const evmc::bytes32& location, std::optional<uint64_t> block_num) {
-    std::optional<ByteView> val{};
-    if (block_num) {
-        val = find_storage_in_history(txn, address, incarnation, location, *block_num);
+    std::optional<ByteView> val{block_num.has_value()
+                                    ? historical_storage(txn, address, incarnation, location, block_num.value())
+                                    : std::nullopt};
+    if (!val.has_value()) {
+        auto src{db::open_cursor(txn, table::kPlainState)};
+        auto key{storage_prefix(full_view(address), incarnation)};
+        val = find_value_suffix(src, key, full_view(location));
     }
-    if (!val) {
-        auto table{txn.open(table::kPlainState)};
-        val = table->get(storage_prefix(address, incarnation), full_view(location));
-    }
-    if (!val) {
+
+    if (!val.has_value()) {
         return {};
     }
 
     evmc::bytes32 res{};
+    assert(val->length() <= kHashLength);
     std::memcpy(res.bytes + kHashLength - val->length(), val->data(), val->length());
     return res;
 }
 
-std::optional<uint64_t> read_previous_incarnation(lmdb::Transaction& txn, const evmc::address& address,
-                                                  std::optional<uint64_t> block_num) {
-    if (!block_num) {
-        // Current incarnation
-        auto incarnation_table{txn.open(table::kIncarnationMap)};
-        std::optional<ByteView> val{incarnation_table->get(full_view(address))};
-        if (!val) {
-            return {};
-        }
-        assert(val->length() == 8);
-        return boost::endian::load_big_u64(val->data());
-    }
-
-    auto history_table{txn.open(table::kAccountHistory)};
-    auto change_table{txn.open(table::kPlainAccountChangeSet)};
-
-    // Search through history and find the latest non-zero incarnation of the account,
-    // disregarding future changes (happening after the block_number).
-    uint64_t block_number{*block_num};
-    while (true) {
-        std::optional<Entry> entry{history_table->seek(account_history_key(address, block_number))};
-        if (!entry || !has_prefix(entry->key, full_view(address))) {
-            return {};
-        }
-
-        std::optional<history_index::SearchResult> changed_at{history_index::find(entry->value, block_number)};
-        if (!changed_at) {
-            return {};
-        }
-
-        uint64_t change_block{changed_at->change_block};
-
-        std::optional<ByteView> encoded{change_table->get(block_key(change_block), full_view(address))};
-        if (encoded && !encoded->empty()) {
-            auto [acc, err]{decode_account_from_storage(*encoded)};
-            check_rlp_err(err);
-            if (acc.incarnation > 0) {
-                return acc.incarnation;
-            }
-        }
-
-        // The account was deleted or had zero incarnation,
-        // so go further back in time.
-        changed_at = history_index::find_previous(entry->value, block_number);
-        if (!changed_at) {
-            return {};
-        }
-        block_number = changed_at->change_block;
-    }
+static std::optional<uint64_t> historical_previous_incarnation() {
+    // TODO (Andrew) implement properly
+    return std::nullopt;
 }
 
-AccountChanges read_account_changes(lmdb::Transaction& txn, uint64_t block_num) {
-    AccountChanges changes;
-    auto table{txn.open(table::kPlainAccountChangeSet)};
-    Bytes blck_key{block_key(block_num)};
-    MDB_val key_mdb{to_mdb_val(blck_key)};
-    MDB_val data_mdb;
-    for (int rc{table->seek_exact(&key_mdb, &data_mdb)}; rc != MDB_NOTFOUND;
-         rc = table->get_next_dup(&key_mdb, &data_mdb)) {
-        lmdb::err_handler(rc);
-        ByteView data{from_mdb_val(data_mdb)};
-        assert(data.length() >= kAddressLength);
-        evmc::address address;
-        std::memcpy(address.bytes, data.data(), kAddressLength);
-        data.remove_prefix(kAddressLength);
-        changes[address] = data;
+std::optional<uint64_t> read_previous_incarnation(mdbx::txn& txn, const evmc::address& address,
+                                                  std::optional<uint64_t> block_num) {
+    if (block_num.has_value()) {
+        return historical_previous_incarnation();
     }
+
+    auto src{db::open_cursor(txn, table::kIncarnationMap)};
+    if (auto data{src.find(mdbx::slice{address.bytes, sizeof(evmc::address)}, /*throw_notfound*/ false)}; data.done) {
+        assert(data.value.length() == 8);
+        return boost::endian::load_big_u64(static_cast<uint8_t*>(data.value.iov_base));
+    }
+    return std::nullopt;
+}
+
+AccountChanges read_account_changes(mdbx::txn& txn, uint64_t block_num) {
+    AccountChanges changes;
+
+    auto src{db::open_cursor(txn, table::kPlainAccountChangeSet)};
+    auto key{block_key(block_num)};
+
+    auto data{src.find(to_slice(key), /*throw_notfound*/ false)};
+    while (data) {
+        assert(data.value.length() >= kAddressLength);
+        evmc::address address;
+        std::memcpy(address.bytes, data.value.iov_base, kAddressLength);
+        data.value.remove_prefix(kAddressLength);
+        changes[address] = Bytes{static_cast<uint8_t*>(data.value.iov_base), data.value.iov_len};
+        data = src.to_current_next_multi(/*throw_not_found*/ false);
+    }
+
     return changes;
 }
 
-StorageChanges read_storage_changes(lmdb::Transaction& txn, uint64_t block_num) {
+StorageChanges read_storage_changes(mdbx::txn& txn, uint64_t block_num) {
     StorageChanges changes;
-    auto table{txn.open(table::kPlainStorageChangeSet)};
-    Bytes prefix{block_key(block_num)};
-    MDB_val key_mdb{to_mdb_val(prefix)};
-    MDB_val data_mdb;
-    for (int rc{table->seek(&key_mdb, &data_mdb)}; rc != MDB_NOTFOUND; rc = table->get_next(&key_mdb, &data_mdb)) {
-        lmdb::err_handler(rc);
 
-        ByteView key{from_mdb_val(key_mdb)};
-        if (!has_prefix(key, prefix)) {
+    const Bytes block_prefix{block_key(block_num)};
+
+    auto src{db::open_cursor(txn, table::kPlainStorageChangeSet)};
+
+    auto key_prefix{to_slice(block_prefix)};
+    auto data{src.lower_bound(key_prefix, false)};
+    while (data) {
+        if (!data.key.starts_with(key_prefix)) {
             break;
         }
-        key.remove_prefix(prefix.length());
-        assert(key.length() == kStoragePrefixLength);
+
+        data.key.remove_prefix(key_prefix.length());
+        assert(data.key.length() == kStoragePrefixLength);
+
         evmc::address address;
-        std::memcpy(address.bytes, key.data(), kAddressLength);
-        key.remove_prefix(kAddressLength);
-        uint64_t incarnation{boost::endian::load_big_u64(key.data())};
+        std::memcpy(address.bytes, data.key.iov_base, kAddressLength);
+        data.key.remove_prefix(kAddressLength);
+        uint64_t incarnation{boost::endian::load_big_u64(static_cast<uint8_t*>(data.key.iov_base))};
 
-        ByteView data{from_mdb_val(data_mdb)};
-        assert(data.length() >= kHashLength);
+        assert(data.value.length() >= kHashLength);
         evmc::bytes32 location;
-        std::memcpy(location.bytes, data.data(), kHashLength);
-        data.remove_prefix(kHashLength);
+        std::memcpy(location.bytes, data.value.iov_base, kHashLength);
+        data.value.remove_prefix(kHashLength);
 
-        changes[address][incarnation][location] = data;
+        changes[address][incarnation][location] = Bytes{static_cast<uint8_t*>(data.value.iov_base), data.value.iov_len};
+        data = src.to_next(/*throw_notfound=*/false);
     }
+
     return changes;
 }
 
-bool read_storage_mode_receipts(lmdb::Transaction& txn) {
-    auto table{txn.open(table::kDatabaseInfo)};
-    std::optional<ByteView> val{table->get(byte_view_of_c_str(kStorageModeReceipts))};
-    return val && val->length() == 1 && (*val)[0] == 1;
+bool migration_happened(mdbx::txn& txn, const char* name) {
+    auto src{db::open_cursor(txn, table::kMigrations)};
+    auto key{to_slice(byte_view_of_c_str(name))};
+    auto data{src.find(key, /*throw_notfound=*/false)};
+    return (data.done == true);
 }
 
-bool migration_happened(lmdb::Transaction& txn, const char* name) {
-    auto tbl{txn.open(table::kMigrations)};
-    return tbl->get(byte_view_of_c_str(name)).has_value();
+std::optional<ChainConfig> read_chain_config(mdbx::txn& txn) {
+    auto src{db::open_cursor(txn, table::kCanonicalHashes)};
+    auto data{src.find(to_slice(block_key(0)), /*throw_notfound=*/false)};
+    if (!data) {
+        return std::nullopt;
+    }
+
+    src = db::open_cursor(txn, table::kConfig);
+    const auto key{data.value};
+    data = src.find(key, /*throw_notfound=*/false);
+    if (!data) {
+        return std::nullopt;
+    }
+
+    // https://github.com/nlohmann/json/issues/2204
+    const auto json = nlohmann::json::parse(data.value.as_string(), nullptr, false);
+    return ChainConfig::from_json(json);
 }
 
-void append_receipts(lmdb::Transaction& txn, uint64_t block_number, const std::vector<Receipt>& receipts) {
-    auto log_table{txn.open(table::kLogs)};
+void append_receipts(mdbx::txn& txn, uint64_t block_number, const std::vector<Receipt>& receipts) {
+    auto log_table{db::open_map(txn, table::kLogs)};
     for (uint32_t i{0}; i < receipts.size(); ++i) {
         if (!receipts[i].logs.empty()) {
-            log_table->put(log_key(block_number, i), cbor_encode(receipts[i].logs), MDB_APPEND);
+            txn.append(log_table, to_slice(log_key(block_number, i)), to_slice(cbor_encode(receipts[i].logs)));
         }
     }
 
-    auto receipt_table{txn.open(table::kBlockReceipts)};
-    receipt_table->put(block_key(block_number), cbor_encode(receipts), MDB_APPEND);
+    auto receipt_table{db::open_map(txn, table::kBlockReceipts)};
+    txn.append(receipt_table, to_slice(block_key(block_number)), to_slice(cbor_encode(receipts)));
 }
 
 }  // namespace silkworm::db

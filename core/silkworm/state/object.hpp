@@ -1,5 +1,5 @@
 /*
-   Copyright 2020 The Silkworm Authors
+   Copyright 2020-2021 The Silkworm Authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -14,13 +14,13 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_STATE_OBJECT_H_
-#define SILKWORM_STATE_OBJECT_H_
-
-#include <robin_hood.h>
+#ifndef SILKWORM_STATE_OBJECT_HPP_
+#define SILKWORM_STATE_OBJECT_HPP_
 
 #include <optional>
+
 #include <silkworm/common/base.hpp>
+#include <silkworm/common/hash_maps.hpp>
 #include <silkworm/types/account.hpp>
 
 namespace silkworm::state {
@@ -28,7 +28,6 @@ namespace silkworm::state {
 struct Object {
     std::optional<Account> initial;
     std::optional<Account> current;
-    std::optional<Bytes> code;
 };
 
 struct CommittedValue {
@@ -37,10 +36,10 @@ struct CommittedValue {
 };
 
 struct Storage {
-    robin_hood::unordered_flat_map<evmc::bytes32, CommittedValue> committed;
-    robin_hood::unordered_flat_map<evmc::bytes32, evmc::bytes32> current;
+    FlatHashMap<evmc::bytes32, CommittedValue> committed;
+    FlatHashMap<evmc::bytes32, evmc::bytes32> current;
 };
 
 }  // namespace silkworm::state
 
-#endif  // SILKWORM_STATE_OBJECT_H_
+#endif  // SILKWORM_STATE_OBJECT_HPP_

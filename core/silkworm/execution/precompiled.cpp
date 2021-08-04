@@ -17,22 +17,27 @@
 #include "precompiled.hpp"
 
 #include <gmp.h>
-#include <silkworm/crypto/blake2.h>
-#include <silkworm/crypto/sha-256.h>
 
 #include <algorithm>
 #include <cstring>
-#include <ethash/keccak.hpp>
 #include <iterator>
-#include <libff/algebra/curves/alt_bn128/alt_bn128_pairing.hpp>
 #include <limits>
+
+#include <ethash/keccak.hpp>
+
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wold-style-cast"
+#include <libff/algebra/curves/alt_bn128/alt_bn128_pairing.hpp>
+#pragma GCC diagnostic pop
+
+#include <silkworm/chain/protocol_param.hpp>
 #include <silkworm/common/endian.hpp>
 #include <silkworm/common/util.hpp>
+#include <silkworm/crypto/blake2.h>
 #include <silkworm/crypto/ecdsa.hpp>
 #include <silkworm/crypto/rmd160.hpp>
+#include <silkworm/crypto/sha-256.h>
 #include <silkworm/crypto/snark.hpp>
-
-#include "protocol_param.hpp"
 
 namespace silkworm::precompiled {
 
@@ -54,12 +59,12 @@ std::optional<Bytes> ecrec_run(ByteView input) noexcept {
         return Bytes{};
     }
 
-    ecdsa::RecoveryId x{ecdsa::get_signature_recovery_id(v)};
-    if (x.eip155_chain_id) {
+    ecdsa::YParityAndChainId y{ecdsa::v_to_y_parity_and_chain_id(v)};
+    if (y.chain_id) {
         return Bytes{};
     }
 
-    std::optional<Bytes> key{ecdsa::recover(d.substr(0, 32), d.substr(64, 64), x.recovery_id)};
+    std::optional<Bytes> key{ecdsa::recover(d.substr(0, 32), d.substr(64, 64), y.odd)};
     if (!key || key->at(0) != 4) {
         return Bytes{};
     }
@@ -76,7 +81,7 @@ uint64_t sha256_gas(ByteView input, evmc_revision) noexcept { return 60 + 12 * (
 
 std::optional<Bytes> sha256_run(ByteView input) noexcept {
     Bytes out(32, '\0');
-    calc_sha_256(out.data(), input.data(), input.length());
+    calc_sha_256(out.data(), input.data(), input.length(), /*use_cpu_extensions=*/true);
     return out;
 }
 
@@ -92,17 +97,25 @@ uint64_t id_gas(ByteView input, evmc_revision) noexcept { return 15 + 3 * ((inpu
 
 std::optional<Bytes> id_run(ByteView input) noexcept { return Bytes{input}; }
 
-static intx::uint256 mult_complexity(const intx::uint256& x) noexcept {
+static intx::uint256 mult_complexity_eip198(const intx::uint256& x) noexcept {
+    const intx::uint256 x_squared{x * x};
     if (x <= 64) {
-        return sqr(x);
+        return x_squared;
     } else if (x <= 1024) {
-        return (sqr(x) >> 2) + 96 * x - 3072;
+        return (x_squared >> 2) + 96 * x - 3072;
     } else {
-        return (sqr(x) >> 4) + 480 * x - 199680;
+        return (x_squared >> 4) + 480 * x - 199680;
     }
 }
 
-uint64_t expmod_gas(ByteView input, evmc_revision) noexcept {
+static intx::uint256 mult_complexity_eip2565(const intx::uint256& max_length) noexcept {
+    const intx::uint256 words{(max_length + 7) >> 3};  // ⌈max_length/8⌉
+    return words * words;
+}
+
+uint64_t expmod_gas(ByteView input, evmc_revision rev) noexcept {
+    const uint64_t min_gas{rev < EVMC_BERLIN ? 0 : 200u};
+
     Bytes buffer;
     input = right_pad(input, 3 * 32, buffer);
 
@@ -111,17 +124,16 @@ uint64_t expmod_gas(ByteView input, evmc_revision) noexcept {
     intx::uint256 mod_len256{intx::be::unsafe::load<intx::uint256>(&input[64])};
 
     if (base_len256 == 0 && mod_len256 == 0) {
-        return 0;
+        return min_gas;
     }
 
-    if (intx::count_significant_words<uint64_t>(base_len256) > 1 ||
-        intx::count_significant_words<uint64_t>(exp_len256) > 1 ||
-        intx::count_significant_words<uint64_t>(mod_len256) > 1) {
+    if (intx::count_significant_words(base_len256) > 1 || intx::count_significant_words(exp_len256) > 1 ||
+        intx::count_significant_words(mod_len256) > 1) {
         return UINT64_MAX;
     }
 
-    uint64_t base_len64{intx::narrow_cast<uint64_t>(base_len256)};
-    uint64_t exp_len64{intx::narrow_cast<uint64_t>(exp_len256)};
+    uint64_t base_len64{static_cast<uint64_t>(base_len256)};
+    uint64_t exp_len64{static_cast<uint64_t>(exp_len256)};
 
     input.remove_prefix(3 * 32);
 
@@ -148,11 +160,19 @@ uint64_t expmod_gas(ByteView input, evmc_revision) noexcept {
         adjusted_exponent_len = 1;
     }
 
-    intx::uint256 gas{mult_complexity(std::max(mod_len256, base_len256)) * adjusted_exponent_len / fee::kGQuadDivisor};
-    if (intx::count_significant_words<uint64_t>(gas) > 1) {
+    const intx::uint256 max_length{std::max(mod_len256, base_len256)};
+
+    intx::uint256 gas;
+    if (rev < EVMC_BERLIN) {
+        gas = mult_complexity_eip198(max_length) * adjusted_exponent_len / param::kGQuadDivisorByzantium;
+    } else {
+        gas = mult_complexity_eip2565(max_length) * adjusted_exponent_len / param::kGQuadDivisorBerlin;
+    }
+
+    if (intx::count_significant_words(gas) > 1) {
         return UINT64_MAX;
     } else {
-        return intx::narrow_cast<uint64_t>(gas);
+        return std::max(min_gas, static_cast<uint64_t>(gas));
     }
 }
 
@@ -232,12 +252,12 @@ std::optional<Bytes> bn_add_run(ByteView input) noexcept {
 
     std::optional<libff::alt_bn128_G1> x{snark::decode_g1_element(input.substr(0, 64))};
     if (!x) {
-        return {};
+        return std::nullopt;
     }
 
     std::optional<libff::alt_bn128_G1> y{snark::decode_g1_element(input.substr(64, 64))};
     if (!y) {
-        return {};
+        return std::nullopt;
     }
 
     libff::alt_bn128_G1 sum{*x + *y};
@@ -254,7 +274,7 @@ std::optional<Bytes> bn_mul_run(ByteView input) noexcept {
 
     std::optional<libff::alt_bn128_G1> x{snark::decode_g1_element(input.substr(0, 64))};
     if (!x) {
-        return {};
+        return std::nullopt;
     }
 
     snark::Scalar n{snark::to_scalar(input.substr(64, 32))};
@@ -272,7 +292,7 @@ uint64_t snarkv_gas(ByteView input, evmc_revision rev) noexcept {
 
 std::optional<Bytes> snarkv_run(ByteView input) noexcept {
     if (input.size() % kSnarkvStride != 0) {
-        return {};
+        return std::nullopt;
     }
     size_t k{input.size() / kSnarkvStride};
 
@@ -285,11 +305,11 @@ std::optional<Bytes> snarkv_run(ByteView input) noexcept {
     for (size_t i{0}; i < k; ++i) {
         std::optional<alt_bn128_G1> a{snark::decode_g1_element(input.substr(i * kSnarkvStride, 64))};
         if (!a) {
-            return {};
+            return std::nullopt;
         }
         std::optional<alt_bn128_G2> b{snark::decode_g2_element(input.substr(i * kSnarkvStride + 64, 128))};
         if (!b) {
-            return {};
+            return std::nullopt;
         }
 
         if (a->is_zero() || b->is_zero()) {
@@ -316,11 +336,11 @@ uint64_t blake2_f_gas(ByteView input, evmc_revision) noexcept {
 
 std::optional<Bytes> blake2_f_run(ByteView input) noexcept {
     if (input.size() != 213) {
-        return {};
+        return std::nullopt;
     }
     uint8_t f{input[212]};
     if (f != 0 && f != 1) {
-        return {};
+        return std::nullopt;
     }
 
     blake2b_state state{};

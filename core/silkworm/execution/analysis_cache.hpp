@@ -1,5 +1,5 @@
 /*
-   Copyright 2020 The Silkworm Authors
+   Copyright 2020-2021 The Silkworm Authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -14,16 +14,16 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_EXECUTION_ANALYSIS_CACHE_H_
-#define SILKWORM_EXECUTION_ANALYSIS_CACHE_H_
+#ifndef SILKWORM_EXECUTION_ANALYSIS_CACHE_HPP_
+#define SILKWORM_EXECUTION_ANALYSIS_CACHE_HPP_
 
-#include <evmc/evmc.hpp>
-#include <lrucache.hpp>
 #include <memory>
+
 #include <silkworm/common/base.hpp>
+#include <silkworm/common/lru_cache.hpp>
 
 namespace evmone {
-struct code_analysis;
+struct AdvancedCodeAnalysis;
 }
 
 namespace silkworm {
@@ -45,19 +45,19 @@ class AnalysisCache {
     /** @brief Gets an EVM analysis from the cache.
      * A nullptr is returned if there's nothing in the cache for this key & revision.
      */
-    std::shared_ptr<evmone::code_analysis> get(const evmc::bytes32& key, evmc_revision revision) noexcept;
+    std::shared_ptr<evmone::AdvancedCodeAnalysis> get(const evmc::bytes32& key, evmc_revision revision) noexcept;
 
     /** @brief Puts an EVM analysis into the cache.
      * All cache entries for other EVM revisions are evicted.
      */
-    void put(const evmc::bytes32& key, const std::shared_ptr<evmone::code_analysis>& analysis,
+    void put(const evmc::bytes32& key, const std::shared_ptr<evmone::AdvancedCodeAnalysis>& analysis,
              evmc_revision revision) noexcept;
 
   private:
-    cache::lru_cache<evmc::bytes32, std::shared_ptr<evmone::code_analysis>> cache_;
+    lru_cache<evmc::bytes32, std::shared_ptr<evmone::AdvancedCodeAnalysis>> cache_;
     evmc_revision revision_{EVMC_MAX_REVISION};
 };
 
 }  // namespace silkworm
 
-#endif  // SILKWORM_EXECUTION_ANALYSIS_CACHE_H_
+#endif  // SILKWORM_EXECUTION_ANALYSIS_CACHE_HPP_

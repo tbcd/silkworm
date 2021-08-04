@@ -17,10 +17,12 @@
 #ifndef SILKWORM_CHAIN_BLOCKCHAIN_HPP_
 #define SILKWORM_CHAIN_BLOCKCHAIN_HPP_
 
-#include <silkworm/chain/validity.hpp>
-#include <silkworm/state/buffer.hpp>
 #include <unordered_map>
 #include <vector>
+
+#include <silkworm/chain/validity.hpp>
+#include <silkworm/execution/state_pool.hpp>
+#include <silkworm/state/buffer.hpp>
 
 namespace silkworm {
 
@@ -32,6 +34,10 @@ class Blockchain {
     Blockchain& operator=(const Blockchain&) = delete;
 
     ValidationResult insert_block(Block& block, bool check_state_root);
+
+    ExecutionStatePool* state_pool{nullptr};
+
+    evmc_vm* exo_evm{nullptr};
 
   private:
     ValidationResult execute_block(const Block& block, bool check_state_root);

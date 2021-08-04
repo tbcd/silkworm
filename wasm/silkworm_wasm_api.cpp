@@ -17,9 +17,10 @@
 #include "silkworm_wasm_api.hpp"
 
 #include <cstdlib>
+
 #include <silkworm/chain/difficulty.hpp>
+#include <silkworm/chain/intrinsic_gas.hpp>
 #include <silkworm/common/util.hpp>
-#include <silkworm/execution/processor.hpp>
 
 void* new_buffer(size_t size) { return std::malloc(size); }
 
@@ -43,14 +44,7 @@ uint8_t* bytes_data(Bytes* str) { return str->data(); }
 
 size_t bytes_length(const Bytes* str) { return str->length(); }
 
-intx::uint256* new_uint256_le(uint64_t a, uint64_t b, uint64_t c, uint64_t d) {
-    auto out{new intx::uint256};
-    out->lo.lo = a;
-    out->lo.hi = b;
-    out->hi.lo = c;
-    out->hi.hi = d;
-    return out;
-}
+intx::uint256* new_uint256_le(uint64_t a, uint64_t b, uint64_t c, uint64_t d) { return new intx::uint256{a, b, c, d}; }
 
 void delete_uint256(intx::uint256* x) { delete x; }
 
@@ -64,36 +58,8 @@ ChainConfig* new_config(uint64_t chain_id) {
 
 void delete_config(ChainConfig* x) { delete x; }
 
-void config_set_update_block(ChainConfig* config, evmc_revision update, uint64_t block) {
-    switch (update) {
-        case EVMC_FRONTIER:
-            // frontier block is always 0
-            return;
-        case EVMC_HOMESTEAD:
-            config->homestead_block = block;
-            return;
-        case EVMC_TANGERINE_WHISTLE:
-            config->tangerine_whistle_block = block;
-            return;
-        case EVMC_SPURIOUS_DRAGON:
-            config->spurious_dragon_block = block;
-            return;
-        case EVMC_BYZANTIUM:
-            config->byzantium_block = block;
-            return;
-        case EVMC_CONSTANTINOPLE:
-            config->constantinople_block = block;
-            return;
-        case EVMC_PETERSBURG:
-            config->petersburg_block = block;
-            return;
-        case EVMC_ISTANBUL:
-            config->istanbul_block = block;
-            return;
-        case EVMC_BERLIN:
-            config->berlin_block = block;
-            return;
-    }
+void config_set_fork_block(ChainConfig* config, evmc_revision fork, uint64_t block) {
+    config->set_revision_block(fork, block);
 }
 
 void config_set_muir_glacier_block(ChainConfig* config, uint64_t block) { config->muir_glacier_block = block; }
@@ -124,12 +90,8 @@ bool check_intrinsic_gas(const Transaction* txn, bool homestead, bool istanbul) 
     return txn->gas_limit >= g0;
 }
 
-const uint8_t* recover_sender(Transaction* txn, bool homestead, uint64_t chain_id) {
-    if (chain_id == 0) {
-        txn->recover_sender(homestead, std::nullopt);
-    } else {
-        txn->recover_sender(homestead, chain_id);
-    }
+const uint8_t* recover_sender(Transaction* txn) {
+    txn->recover_sender();
     return txn->from ? txn->from->bytes : nullptr;
 }
 
@@ -174,7 +136,7 @@ uint64_t header_number(const BlockHeader* header) { return header->number; }
 
 uint8_t* header_state_root(BlockHeader* header) { return header->state_root.bytes; }
 
-void block_recover_senders(Block* b, const ChainConfig* config) { b->recover_senders(*config); }
+void block_recover_senders(Block* b) { b->recover_senders(); }
 
 MemoryBuffer* new_state() { return new MemoryBuffer; }
 

@@ -17,23 +17,34 @@
 // RLP decoding functions as per
 // https://eth.wiki/en/fundamentals/rlp
 
-#ifndef SILKWORM_RLP_DECODE_H_
-#define SILKWORM_RLP_DECODE_H_
+#ifndef SILKWORM_RLP_DECODE_HPP_
+#define SILKWORM_RLP_DECODE_HPP_
 
 #include <array>
 #include <cstring>
-#include <gsl/span>
-#include <intx/intx.hpp>
-#include <silkworm/common/base.hpp>
-#include <silkworm/rlp/encode.hpp>
 #include <utility>
 #include <vector>
+
+#include <gsl/span>
+#include <intx/intx.hpp>
+
+#include <silkworm/common/base.hpp>
+#include <silkworm/rlp/encode.hpp>
 
 namespace silkworm::rlp {
 
 enum class [[nodiscard]] DecodingResult{
-    kOk = 0,           kOverflow,         kLeadingZero,      kInputTooShort,  kNonCanonicalSingleByte,
-    kNonCanonicalSize, kUnexpectedLength, kUnexpectedString, kUnexpectedList, kListLengthMismatch,
+    kOk = 0,
+    kOverflow,
+    kLeadingZero,
+    kInputTooShort,
+    kNonCanonicalSingleByte,
+    kNonCanonicalSize,
+    kUnexpectedLength,
+    kUnexpectedString,
+    kUnexpectedList,
+    kListLengthMismatch,
+    kUnsupportedTransactionType,  // EIP-2718
 };
 
 // Consumes RLP header unless it's a single byte in the [0x00, 0x7f] range,
@@ -44,7 +55,13 @@ template <class T>
 DecodingResult decode(ByteView& from, T& to) noexcept;
 
 template <>
+DecodingResult decode(ByteView& from, evmc::bytes32& to) noexcept;
+
+template <>
 DecodingResult decode(ByteView& from, Bytes& to) noexcept;
+
+template <>
+DecodingResult decode(ByteView& from, bool& to) noexcept;
 
 template <>
 DecodingResult decode(ByteView& from, uint64_t& to) noexcept;
@@ -97,7 +114,7 @@ DecodingResult decode_vector(ByteView& from, std::vector<T>& to) noexcept {
     ByteView payload_view{from.substr(0, h.payload_length)};
     while (!payload_view.empty()) {
         to.emplace_back();
-        if (DecodingResult err{decode(payload_view, to.back())}; err != DecodingResult::kOk) {
+        if (err = decode(payload_view, to.back()); err != DecodingResult::kOk) {
             return err;
         }
     }
@@ -114,4 +131,4 @@ DecodingResult decode_vector(ByteView& from, std::vector<T>& to) noexcept {
 
 }  // namespace silkworm::rlp
 
-#endif  // SILKWORM_RLP_DECODE_H_
+#endif  // SILKWORM_RLP_DECODE_HPP_

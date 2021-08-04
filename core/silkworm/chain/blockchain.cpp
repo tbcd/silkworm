@@ -17,6 +17,7 @@
 #include "blockchain.hpp"
 
 #include <cassert>
+
 #include <silkworm/execution/execution.hpp>
 
 namespace silkworm {
@@ -38,7 +39,7 @@ ValidationResult Blockchain::insert_block(Block& block, bool check_state_root) {
         return it->second;
     }
 
-    block.recover_senders(config_);
+    block.recover_senders();
 
     uint64_t ancestor{canonical_ancestor(block.header, hash)};
     uint64_t current_canonical_block{state_.current_canonical_block()};
@@ -88,9 +89,12 @@ ValidationResult Blockchain::insert_block(Block& block, bool check_state_root) {
 }
 
 ValidationResult Blockchain::execute_block(const Block& block, bool check_state_root) {
-    std::pair<std::vector<Receipt>, ValidationResult> res{silkworm::execute_block(block, state_, config_)};
-    if (res.second != ValidationResult::kOk) {
-        return res.second;
+    std::vector<Receipt> receipts;
+
+    const ValidationResult res{
+        silkworm::execute_block(block, state_, config_, receipts, /*analysis_cache=*/nullptr, state_pool, exo_evm)};
+    if (res != ValidationResult::kOk) {
+        return res;
     }
 
     if (check_state_root) {

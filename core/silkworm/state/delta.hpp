@@ -14,10 +14,10 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_STATE_DELTA_H_
-#define SILKWORM_STATE_DELTA_H_
+#ifndef SILKWORM_STATE_DELTA_HPP_
+#define SILKWORM_STATE_DELTA_HPP_
 
-#include <evmc/evmc.hpp>
+#include <silkworm/common/base.hpp>
 #include <silkworm/state/object.hpp>
 
 namespace silkworm {
@@ -121,7 +121,30 @@ namespace state {
         evmc::address address_;
     };
 
+    // Storage accessed (see EIP-2929).
+    class StorageAccessDelta : public Delta {
+      public:
+        StorageAccessDelta(evmc::address address, evmc::bytes32 key) noexcept;
+
+        void revert(IntraBlockState& state) noexcept override;
+
+      private:
+        evmc::address address_;
+        evmc::bytes32 key_;
+    };
+
+    // Account accessed (see EIP-2929).
+    class AccountAccessDelta : public Delta {
+      public:
+        explicit AccountAccessDelta(evmc::address address) noexcept;
+
+        void revert(IntraBlockState& state) noexcept override;
+
+      private:
+        evmc::address address_;
+    };
+
 }  // namespace state
 }  // namespace silkworm
 
-#endif  // SILKWORM_STATE_DELTA_H_
+#endif  // SILKWORM_STATE_DELTA_HPP_

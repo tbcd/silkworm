@@ -16,13 +16,15 @@
 
 #include "analysis_cache.hpp"
 
-#include <evmone/analysis.hpp>
 #include <memory>
 #include <utility>
 
+#include <evmone/analysis.hpp>
+
 namespace silkworm {
 
-std::shared_ptr<evmone::code_analysis> AnalysisCache::get(const evmc::bytes32& key, evmc_revision revision) noexcept {
+std::shared_ptr<evmone::AdvancedCodeAnalysis> AnalysisCache::get(const evmc::bytes32& key,
+                                                                 evmc_revision revision) noexcept {
     if (revision_ == revision) {
         const auto* ptr{cache_.get(key)};
         return ptr ? *ptr : nullptr;
@@ -31,7 +33,7 @@ std::shared_ptr<evmone::code_analysis> AnalysisCache::get(const evmc::bytes32& k
     }
 }
 
-void AnalysisCache::put(const evmc::bytes32& key, const std::shared_ptr<evmone::code_analysis>& analysis,
+void AnalysisCache::put(const evmc::bytes32& key, const std::shared_ptr<evmone::AdvancedCodeAnalysis>& analysis,
                         evmc_revision revision) noexcept {
     if (revision_ != revision) {
         // multiple revisions are not supported

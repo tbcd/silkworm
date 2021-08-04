@@ -16,10 +16,7 @@
 
 #include "util.hpp"
 
-#include <algorithm>
 #include <cassert>
-#include <cstring>
-#include <iterator>
 #include <regex>
 
 namespace silkworm {
@@ -154,36 +151,70 @@ std::optional<Bytes> from_hex(std::string_view hex) noexcept {
     return out;
 }
 
+inline bool case_insensitive_char_comparer(char a, char b) { return (tolower(a) == tolower(b)); }
+
+bool iequals(const std::string& a, const std::string& b) {
+    return (a.size() == b.size() && std::equal(a.begin(), a.end(), b.begin(), case_insensitive_char_comparer));
+}
+
 std::optional<uint64_t> parse_size(const std::string& sizestr) {
     if (sizestr.empty()) {
-        return 0;
+        return 0ull;
     }
 
-    static const std::regex pattern{"^([0-9]{1,})([\\ ]{0,})?(B|KB|MB|GB|TB)?$"};
+    static const std::regex pattern{R"(^(\d*)(\.\d{1,3})?\ *?(B|KB|MB|GB|TB)?$)", std::regex_constants::icase};
     std::smatch matches;
     if (!std::regex_search(sizestr, matches, pattern, std::regex_constants::match_default)) {
         return std::nullopt;
     };
 
-    uint64_t number{std::strtoull(matches[1].str().c_str(), nullptr, 10)};
+    std::string int_part, dec_part, suf_part;
+    uint64_t multiplier{1};  // Default for bytes (B|b)
 
-    if (matches[3].length() == 0) {
-        return number;
+    int_part = matches[1].str();
+    if (!matches[2].str().empty()) {
+        dec_part = matches[2].str().substr(1);
     }
-    std::string suffix = matches[3].str();
-    if (suffix == "B") {
-        return number;
-    } else if (suffix == "KB") {
-        return number * kKibi;
-    } else if (suffix == "MB") {
-        return number * kMebi;
-    } else if (suffix == "GB") {
-        return number * kGibi;
-    } else if (suffix == "TB") {
-        return number * kTebi;
-    } else {
-        return std::nullopt;
+    suf_part = matches[3].str();
+
+    if (!suf_part.empty()) {
+        if (iequals(suf_part, "KB")) {
+            multiplier = kKibi;
+        } else if (iequals(suf_part, "MB")) {
+            multiplier = kMebi;
+        } else if (iequals(suf_part, "GB")) {
+            multiplier = kGibi;
+        } else if (iequals(suf_part, "TB")) {
+            multiplier = kTebi;
+        }
     }
+
+    auto number{std::strtoull(int_part.c_str(), nullptr, 10)};
+    number *= multiplier;
+    if (!dec_part.empty()) {
+        // Use literals so we don't deal with floats and doubles
+        auto base{"1" + std::string(dec_part.size(), '0')};
+        auto b{std::strtoul(base.c_str(), nullptr, 10)};
+        auto d{std::strtoul(dec_part.c_str(), nullptr, 10)};
+        number += multiplier * d / b;
+    }
+    return number;
+}
+
+std::string human_size(uint64_t bytes) {
+    static const char* suffix[]{"B", "KB", "MB", "GB", "TB"};
+    static const uint32_t items{sizeof(suffix) / sizeof(suffix[0])};
+    uint32_t index{0};
+    double value{static_cast<double>(bytes)};
+    while (value >= kKibi) {
+        value /= kKibi;
+        if (++index == (items - 1)) {
+            break;
+        }
+    }
+    static char output[64];
+    sprintf(output, "%.02lf %s", value, suffix[index]);
+    return std::string(output);
 }
 
 size_t prefix_length(ByteView a, ByteView b) {
@@ -195,4 +226,23 @@ size_t prefix_length(ByteView a, ByteView b) {
     }
     return len;
 }
+
+std::vector<std::string> split(std::string source, std::string delimiter) {
+    std::vector<std::string> res{};
+    if (delimiter.length() >= source.length() || !delimiter.length()) {
+        res.emplace_back(source);
+        return res;
+    }
+    size_t pos{0};
+    while ((pos = source.find(delimiter)) != std::string::npos) {
+        res.emplace_back(source.substr(0, pos));
+        source.erase(0, pos + delimiter.length());
+    }
+    // Any residual part of input where delimiter is not found
+    if (source.length()) {
+        res.emplace_back(source);
+    }
+    return res;
+}
+
 }  // namespace silkworm

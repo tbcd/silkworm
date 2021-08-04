@@ -16,8 +16,10 @@
 
 #include "memory_buffer.hpp"
 
-#include <ethash/keccak.hpp>
 #include <map>
+
+#include <ethash/keccak.hpp>
+
 #include <silkworm/common/util.hpp>
 #include <silkworm/rlp/encode.hpp>
 #include <silkworm/trie/hash_builder.hpp>
@@ -32,7 +34,7 @@ std::optional<Account> MemoryBuffer::read_account(const evmc::address& address) 
     return it->second;
 }
 
-Bytes MemoryBuffer::read_code(const evmc::bytes32& code_hash) const noexcept {
+ByteView MemoryBuffer::read_code(const evmc::bytes32& code_hash) const noexcept {
     auto it{code_.find(code_hash)};
     if (it == code_.end()) {
         return {};
@@ -168,7 +170,9 @@ void MemoryBuffer::update_account(const evmc::address& address, std::optional<Ac
 }
 
 void MemoryBuffer::update_account_code(const evmc::address&, uint64_t, const evmc::bytes32& code_hash, ByteView code) {
-    code_[code_hash] = code;
+    // Don't overwrite already existing code so that views of it
+    // that were previously returned by read_code() are still valid.
+    code_.try_emplace(code_hash, code);
 }
 
 void MemoryBuffer::update_storage(const evmc::address& address, uint64_t incarnation, const evmc::bytes32& location,
@@ -245,10 +249,9 @@ evmc::bytes32 MemoryBuffer::account_storage_root(const evmc::address& address, u
         storage_rlp[to_bytes32(full_view(hash.bytes))] = rlp;
     }
 
-    auto it{storage_rlp.cbegin()};
-    trie::HashBuilder hb{full_view(it->first), it->second};
-    for (++it; it != storage_rlp.cend(); ++it) {
-        hb.add(full_view(it->first), it->second);
+    trie::HashBuilder hb;
+    for (const auto& [hash, rlp] : storage_rlp) {
+        hb.add(full_view(hash), rlp);
     }
 
     return hb.root_hash();
@@ -266,10 +269,9 @@ evmc::bytes32 MemoryBuffer::state_root_hash() const {
         account_rlp[to_bytes32(full_view(hash.bytes))] = account.rlp(storage_root);
     }
 
-    auto it{account_rlp.cbegin()};
-    trie::HashBuilder hb{full_view(it->first), it->second};
-    for (++it; it != account_rlp.cend(); ++it) {
-        hb.add(full_view(it->first), it->second);
+    trie::HashBuilder hb;
+    for (const auto& [hash, rlp] : account_rlp) {
+        hb.add(full_view(hash), rlp);
     }
 
     return hb.root_hash();

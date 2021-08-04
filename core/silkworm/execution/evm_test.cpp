@@ -1,5 +1,5 @@
 /*
-   Copyright 2020 The Silkworm Authors
+   Copyright 2020-2021 The Silkworm Authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -17,10 +17,12 @@
 #include "evm.hpp"
 
 #include <catch2/catch.hpp>
+
+#include <silkworm/chain/protocol_param.hpp>
+#include <silkworm/common/util.hpp>
 #include <silkworm/state/memory_buffer.hpp>
 
 #include "address.hpp"
-#include "protocol_param.hpp"
 
 namespace silkworm {
 
@@ -34,7 +36,7 @@ TEST_CASE("Value transfer") {
 
     MemoryBuffer db;
     IntraBlockState state{db};
-    EVM evm{block, state};
+    EVM evm{block, state, kMainnetConfig};
 
     CHECK(state.get_balance(from) == 0);
     CHECK(state.get_balance(to) == 0);
@@ -45,12 +47,14 @@ TEST_CASE("Value transfer") {
     txn.value = value;
 
     CallResult res{evm.execute(txn, 0)};
-    CHECK(res.status == static_cast<evmc_status_code>(EVMC_BALANCE_TOO_LOW));
+    CHECK(res.status == EVMC_INSUFFICIENT_BALANCE);
+    CHECK(res.data == Bytes{});
 
     state.add_to_balance(from, kEther);
 
     res = evm.execute(txn, 0);
     CHECK(res.status == EVMC_SUCCESS);
+    CHECK(res.data == Bytes{});
 
     CHECK(state.get_balance(from) == kEther - value);
     CHECK(state.get_balance(to) == value);
@@ -86,7 +90,7 @@ TEST_CASE("Smart contract with storage") {
 
     MemoryBuffer db;
     IntraBlockState state{db};
-    EVM evm{block, state};
+    EVM evm{block, state, kMainnetConfig};
 
     Transaction txn{};
     txn.from = caller;
@@ -95,10 +99,12 @@ TEST_CASE("Smart contract with storage") {
     uint64_t gas{0};
     CallResult res{evm.execute(txn, gas)};
     CHECK(res.status == EVMC_OUT_OF_GAS);
+    CHECK(res.data == Bytes{});
 
     gas = 50'000;
     res = evm.execute(txn, gas);
     CHECK(res.status == EVMC_SUCCESS);
+    CHECK(res.data == silkworm::from_hex("600035600055"));
 
     evmc::address contract_address{create_address(caller, /*nonce=*/1)};
     evmc::bytes32 key0{};
@@ -110,6 +116,7 @@ TEST_CASE("Smart contract with storage") {
 
     res = evm.execute(txn, gas);
     CHECK(res.status == EVMC_SUCCESS);
+    CHECK(res.data == Bytes{});
     CHECK(state.get_current_storage(contract_address, key0) == new_val);
 }
 
@@ -155,7 +162,10 @@ TEST_CASE("Maximum call depth") {
     IntraBlockState state{db};
     state.set_code(contract, code);
 
-    EVM evm{block, state};
+    EVM evm{block, state, kMainnetConfig};
+
+    AnalysisCache analysis_cache{/*maxSize=*/16};
+    evm.advanced_analysis_cache = &analysis_cache;
 
     Transaction txn{};
     txn.from = caller;
@@ -164,16 +174,19 @@ TEST_CASE("Maximum call depth") {
     uint64_t gas{1'000'000};
     CallResult res{evm.execute(txn, gas)};
     CHECK(res.status == EVMC_SUCCESS);
+    CHECK(res.data == Bytes{});
 
     evmc::bytes32 num_of_recursions{to_bytes32(*from_hex("0400"))};
     txn.data = full_view(num_of_recursions);
     res = evm.execute(txn, gas);
     CHECK(res.status == EVMC_SUCCESS);
+    CHECK(res.data == Bytes{});
 
     num_of_recursions = to_bytes32(*from_hex("0401"));
     txn.data = full_view(num_of_recursions);
     res = evm.execute(txn, gas);
     CHECK(res.status == EVMC_INVALID_INSTRUCTION);
+    CHECK(res.data == Bytes{});
 }
 
 TEST_CASE("DELEGATECALL") {
@@ -208,7 +221,7 @@ TEST_CASE("DELEGATECALL") {
     state.set_code(caller_address, caller_code);
     state.set_code(callee_address, callee_code);
 
-    EVM evm{block, state};
+    EVM evm{block, state, kMainnetConfig};
 
     Transaction txn{};
     txn.from = caller_address;
@@ -218,6 +231,7 @@ TEST_CASE("DELEGATECALL") {
     uint64_t gas{1'000'000};
     CallResult res{evm.execute(txn, gas)};
     CHECK(res.status == EVMC_SUCCESS);
+    CHECK(res.data == Bytes{});
 
     evmc::bytes32 key0{};
     CHECK(to_hex(zeroless_view(state.get_current_storage(caller_address, key0))) == to_hex(full_view(caller_address)));
@@ -268,7 +282,7 @@ TEST_CASE("CREATE should only return on failure") {
 
     MemoryBuffer db;
     IntraBlockState state{db};
-    EVM evm{block, state};
+    EVM evm{block, state, kMainnetConfig};
 
     Transaction txn{};
     txn.from = caller;
@@ -277,6 +291,7 @@ TEST_CASE("CREATE should only return on failure") {
     uint64_t gas{150'000};
     CallResult res{evm.execute(txn, gas)};
     CHECK(res.status == EVMC_SUCCESS);
+    CHECK(res.data == Bytes{});
 
     evmc::address contract_address{create_address(caller, /*nonce=*/0)};
     evmc::bytes32 key0{};
@@ -299,7 +314,7 @@ TEST_CASE("Contract overwrite") {
     IntraBlockState state{db};
     state.set_code(contract_address, old_code);
 
-    EVM evm{block, state};
+    EVM evm{block, state, kMainnetConfig};
 
     Transaction txn{};
     txn.from = caller;
@@ -310,6 +325,39 @@ TEST_CASE("Contract overwrite") {
 
     CHECK(res.status == EVMC_INVALID_INSTRUCTION);
     CHECK(res.gas_left == 0);
+    CHECK(res.data == Bytes{});
+}
+
+TEST_CASE("EIP-3541: Reject new contracts starting with the 0xEF byte") {
+    ChainConfig config{kMainnetConfig};
+    config.set_revision_block(EVMC_LONDON, 13'000'000);
+
+    Block block;
+    block.header.number = 13'500'000;
+
+    MemoryBuffer db;
+    IntraBlockState state{db};
+    EVM evm{block, state, config};
+
+    Transaction txn;
+    txn.from = 0x1000000000000000000000000000000000000000_address;
+    const uint64_t gas{50'000};
+
+    // https://eips.ethereum.org/EIPS/eip-3541#test-cases
+    txn.data = *from_hex("0x60ef60005360016000f3");
+    CHECK(evm.execute(txn, gas).status == EVMC_CONTRACT_VALIDATION_FAILURE);
+
+    txn.data = *from_hex("0x60ef60005360026000f3");
+    CHECK(evm.execute(txn, gas).status == EVMC_CONTRACT_VALIDATION_FAILURE);
+
+    txn.data = *from_hex("0x60ef60005360036000f3");
+    CHECK(evm.execute(txn, gas).status == EVMC_CONTRACT_VALIDATION_FAILURE);
+
+    txn.data = *from_hex("0x60ef60005360206000f3");
+    CHECK(evm.execute(txn, gas).status == EVMC_CONTRACT_VALIDATION_FAILURE);
+
+    txn.data = *from_hex("0x60fe60005360016000f3");
+    CHECK(evm.execute(txn, gas).status == EVMC_SUCCESS);
 }
 
 }  // namespace silkworm

@@ -1,12 +1,9 @@
 /*
-   Copyright 2020 The Silkworm Authors
-
+   Copyright 2020-2021 The Silkworm Authors
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
    You may obtain a copy of the License at
-
        http://www.apache.org/licenses/LICENSE-2.0
-
    Unless required by applicable law or agreed to in writing, software
    distributed under the License is distributed on an "AS IS" BASIS,
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
@@ -16,16 +13,18 @@
 
 #include "collector.hpp"
 
-#include <boost/endian/conversion.hpp>
-#include <boost/filesystem/operations.hpp>
-#include <catch2/catch.hpp>
+#include <filesystem>
 #include <set>
+
+#include <boost/endian/conversion.hpp>
+#include <catch2/catch.hpp>
+
 #include <silkworm/common/temp_dir.hpp>
 #include <silkworm/db/tables.hpp>
 
 namespace silkworm::etl {
 
-namespace fs = boost::filesystem;
+namespace fs = std::filesystem;
 
 static std::vector<Entry> generate_entry_set(size_t size) {
     std::vector<Entry> pairs;
@@ -53,44 +52,39 @@ void run_collector_test(LoadFunc load_func) {
     TemporaryDirectory etl_tmp_dir;
     // Initialize random seed
     srand(time(NULL));
+
     // Initialize temporary Database
-    lmdb::DatabaseConfig db_config{db_tmp_dir.path(), 32 * kMebi};
-    db_config.set_readonly(false);
-    auto env{lmdb::get_env(db_config)};
-    auto txn{env->begin_rw_transaction()};
+    db::EnvConfig db_config{db_tmp_dir.path(), /*create*/ true};
+    db_config.inmemory = true;
+
+    auto env{db::open_env(db_config)};
+    auto txn{env.start_write()};
+
     // Generate Test Entries
     auto set{generate_entry_set(1000)};                       // 1000 entries in total
     auto collector{Collector(etl_tmp_dir.path(), 100 * 16)};  // 100 entries per file (16 bytes per entry)
-    db::table::create_all(*txn);
+    db::table::create_all(txn);
     // Collection
     for (auto entry : set) {
         collector.collect(entry);
     }
     // Check whether temporary files were generated
     CHECK(std::distance(fs::directory_iterator{etl_tmp_dir.path()}, fs::directory_iterator{}) == 10);
-    // Load data
-    auto to{txn->open(db::table::kHeaderNumbers)};
-    collector.load(to.get(), load_func);
 
-    // Check wheter load was performed as intended
-    for (auto& entry : set) {
-        for (auto& transformed_entry : load_func(entry)) {
-            auto value{to->get(transformed_entry.key)};
-            REQUIRE(value);
-            CHECK(value->compare(transformed_entry.value) == 0);
-        }
-    }
+    // Load data
+    auto to{db::open_cursor(txn, db::table::kHeaderNumbers)};
+    collector.load(to, load_func);
     // Check wheter temporary files were cleaned
     CHECK(std::distance(fs::directory_iterator{etl_tmp_dir.path()}, fs::directory_iterator{}) == 0);
-
 }
 
-TEST_CASE("collect_and_default_load") { run_collector_test(identity_load); }
+TEST_CASE("collect_and_default_load") { run_collector_test(nullptr); }
 
 TEST_CASE("collect_and_load") {
-    run_collector_test([](Entry entry) {
+    run_collector_test([](Entry entry, mdbx::cursor& table, MDBX_put_flags_t flags) {
+        (void)flags;
         entry.key.at(0) = 1;
-        return std::vector<Entry>({entry});
+        table.upsert(db::to_slice(entry.key), db::to_slice(entry.value));
     });
 }
 

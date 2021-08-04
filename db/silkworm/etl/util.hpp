@@ -1,5 +1,5 @@
 /*
-   Copyright 2020 The Silkworm Authors
+   Copyright 2020-2021 The Silkworm Authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -14,11 +14,12 @@
    limitations under the License.
 */
 
-#pragma once
-#ifndef SILKWORM_ETL_UTIL_H_
-#define SILKWORM_ETL_UTIL_H_
+#ifndef SILKWORM_ETL_UTIL_HPP_
+#define SILKWORM_ETL_UTIL_HPP_
 
 #include <stdexcept>
+
+#include <silkworm/common/base.hpp>
 
 namespace silkworm::etl {
 
@@ -40,5 +41,8 @@ struct Entry {
     size_t size() const noexcept { return key.size() + value.size(); }
 };
 
+bool operator<(const Entry& a, const Entry& b);
+
 }  // namespace silkworm::etl
-#endif  // !SILKWORM_ETL_UTIL_H_
+
+#endif  // SILKWORM_ETL_UTIL_HPP_

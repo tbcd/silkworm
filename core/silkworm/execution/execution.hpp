@@ -14,8 +14,10 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_EXECUTION_EXECUTION_H_
-#define SILKWORM_EXECUTION_EXECUTION_H_
+#ifndef SILKWORM_EXECUTION_EXECUTION_HPP_
+#define SILKWORM_EXECUTION_EXECUTION_HPP_
+
+#include <stdexcept>
 
 #include <silkworm/chain/config.hpp>
 #include <silkworm/chain/validity.hpp>
@@ -24,24 +26,26 @@
 #include <silkworm/state/buffer.hpp>
 #include <silkworm/types/block.hpp>
 #include <silkworm/types/receipt.hpp>
-#include <stdexcept>
 
 namespace silkworm {
 
 /** @brief Executes a given block and writes resulting changes into the database.
  *
  * Transaction senders must be already populated.
- * The DB table kCurrentState should match the Ethereum state at the begining of the block.
+ * kPlainState DB table (+auxilary tables) should match the Ethereum state at the begining of the block.
+ *
+ * Another precondition: pre_validate_block(block) must return kOk.
  *
  * Warning: This method does not verify state root;
  * pre-Byzantium receipt root isn't validated either.
  *
  * For better performance use AnalysisCache & ExecutionStatePool.
  */
-[[nodiscard]] std::pair<std::vector<Receipt>, ValidationResult> execute_block(
-    const Block& block, StateBuffer& buffer, const ChainConfig& config = kMainnetConfig,
-    AnalysisCache* analysis_cache = nullptr, ExecutionStatePool* state_pool = nullptr) noexcept;
+[[nodiscard]] ValidationResult execute_block(const Block& block, StateBuffer& buffer, const ChainConfig& config,
+                                             std::vector<Receipt>& out, AnalysisCache* analysis_cache = nullptr,
+                                             ExecutionStatePool* state_pool = nullptr,
+                                             evmc_vm* exo_evm = nullptr) noexcept;
 
 }  // namespace silkworm
 
-#endif  // SILKWORM_EXECUTION_EXECUTION_H_
+#endif  // SILKWORM_EXECUTION_EXECUTION_HPP_

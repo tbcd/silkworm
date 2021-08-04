@@ -14,14 +14,20 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_TYPES_ACCOUNT_H_
-#define SILKWORM_TYPES_ACCOUNT_H_
+#ifndef SILKWORM_TYPES_ACCOUNT_HPP_
+#define SILKWORM_TYPES_ACCOUNT_HPP_
 
 #include <intx/intx.hpp>
+
 #include <silkworm/common/base.hpp>
 #include <silkworm/rlp/decode.hpp>
 
 namespace silkworm {
+
+// Default incarnation for smart contracts is 1;
+// contracts that were previously destructed and then re-created will have an incarnation greater than 1.
+// The incarnation of non-contracts (externally owned accounts) is always 0.
+constexpr uint64_t kDefaultIncarnation{1};
 
 struct Account {
     uint64_t nonce{0};
@@ -29,10 +35,10 @@ struct Account {
     evmc::bytes32 code_hash{kEmptyHash};
     uint64_t incarnation{0};
 
-    // Turbo-Geth (*Account)EncodeForStorage
-    Bytes encode_for_storage(bool omit_code_hash) const;
+    // Erigon (*Account)EncodeForStorage
+    Bytes encode_for_storage(bool omit_code_hash = false) const;
 
-    // Turbo-Geth (*Account)EncodingLengthForStorage
+    // Erigon (*Account)EncodingLengthForStorage
     size_t encoding_length_for_storage() const;
 
     Bytes rlp(const evmc::bytes32& storage_root) const;
@@ -40,9 +46,14 @@ struct Account {
 
 bool operator==(const Account& a, const Account& b);
 
-// Turbo-Geth (*Account)DecodeForStorage
+ /*
+ * Extract the incarnation from an encoded account object without fully decoding it.
+ */
+std::pair<uint64_t, rlp::DecodingResult> extract_incarnation(ByteView);
+
+// Erigon (*Account)DecodeForStorage
 [[nodiscard]] std::pair<Account, rlp::DecodingResult> decode_account_from_storage(ByteView encoded) noexcept;
 
 }  // namespace silkworm
 
-#endif  // SILKWORM_TYPES_ACCOUNT_H_
+#endif  // SILKWORM_TYPES_ACCOUNT_HPP_

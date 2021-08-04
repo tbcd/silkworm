@@ -14,18 +14,18 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_EXECUTION_PROCESSOR_H_
-#define SILKWORM_EXECUTION_PROCESSOR_H_
+#ifndef SILKWORM_EXECUTION_PROCESSOR_HPP_
+#define SILKWORM_EXECUTION_PROCESSOR_HPP_
 
 #include <stdint.h>
+
+#include <vector>
 
 #include <silkworm/chain/validity.hpp>
 #include <silkworm/execution/evm.hpp>
 #include <silkworm/types/block.hpp>
 #include <silkworm/types/receipt.hpp>
 #include <silkworm/types/transaction.hpp>
-#include <utility>
-#include <vector>
 
 namespace silkworm {
 
@@ -34,16 +34,19 @@ class ExecutionProcessor {
     ExecutionProcessor(const ExecutionProcessor&) = delete;
     ExecutionProcessor& operator=(const ExecutionProcessor&) = delete;
 
-    ExecutionProcessor(const Block& block, IntraBlockState& state, const ChainConfig& config = kMainnetConfig);
+    ExecutionProcessor(const Block& block, IntraBlockState& state, const ChainConfig& config);
 
-    // precondition: txn.from must be recovered, otherwise kMissingSender will be returned
+    // Preconditions:
+    // 1) pre_validate_transaction(txn) must return kOk
+    // 2) txn.from must be recovered, otherwise kMissingSender will be returned
     ValidationResult validate_transaction(const Transaction& txn) const noexcept;
 
     // precondition: transaction must be valid
     Receipt execute_transaction(const Transaction& txn) noexcept;
 
     /// Execute the block, but do not write to the DB yet
-    [[nodiscard]] std::pair<std::vector<Receipt>, ValidationResult> execute_block() noexcept;
+    /// precondition: pre_validate_block(block) must return kOk
+    [[nodiscard]] ValidationResult execute_block(std::vector<Receipt>& out) noexcept;
 
     uint64_t cumulative_gas_used() const noexcept { return cumulative_gas_used_; }
 
@@ -60,10 +63,6 @@ class ExecutionProcessor {
     EVM evm_;
 };
 
-// Returns the intrinsic gas of a transaction.
-// Refer to g0 in Section 6.2 "Execution" of the Yellow Paper.
-intx::uint128 intrinsic_gas(const Transaction& txn, bool homestead, bool istanbul) noexcept;
-
 }  // namespace silkworm
 
-#endif  // SILKWORM_EXECUTION_PROCESSOR_H_
+#endif  // SILKWORM_EXECUTION_PROCESSOR_HPP_

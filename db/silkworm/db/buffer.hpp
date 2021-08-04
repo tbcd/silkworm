@@ -14,36 +14,40 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_DB_BUFFER_H_
-#define SILKWORM_DB_BUFFER_H_
+#ifndef SILKWORM_DB_BUFFER_HPP_
+#define SILKWORM_DB_BUFFER_HPP_
+
+#include <cassert>
+#include <optional>
+#include <vector>
 
 #include <absl/container/btree_map.h>
 #include <absl/container/flat_hash_map.h>
 #include <absl/container/flat_hash_set.h>
 
-#include <evmc/evmc.hpp>
-#include <optional>
-#include <silkworm/db/chaindb.hpp>
 #include <silkworm/db/util.hpp>
 #include <silkworm/state/buffer.hpp>
+#include <silkworm/trie/hash_builder.hpp>
 #include <silkworm/types/account.hpp>
 #include <silkworm/types/block.hpp>
 #include <silkworm/types/receipt.hpp>
-#include <vector>
 
 namespace silkworm::db {
 
 class Buffer : public StateBuffer {
   public:
-    explicit Buffer(lmdb::Transaction* txn, std::optional<uint64_t> historical_block = std::nullopt)
-        : txn_{txn}, historical_block_{historical_block} {}
+    // txn must be valid (its handle != nullptr)
+    explicit Buffer(mdbx::txn& txn, std::optional<uint64_t> historical_block = std::nullopt)
+        : txn_{txn}, historical_block_{historical_block} {
+        assert(txn_);
+    }
 
     /** @name Readers */
     ///@{
 
     std::optional<Account> read_account(const evmc::address& address) const noexcept override;
 
-    Bytes read_code(const evmc::bytes32& code_hash) const noexcept override;
+    ByteView read_code(const evmc::bytes32& code_hash) const noexcept override;
 
     evmc::bytes32 read_storage(const evmc::address& address, uint64_t incarnation,
                                const evmc::bytes32& location) const noexcept override;
@@ -112,7 +116,7 @@ class Buffer : public StateBuffer {
 
     void bump_batch_size(size_t key_len, size_t value_len);
 
-    lmdb::Transaction* txn_{nullptr};
+    mdbx::txn& txn_;
     std::optional<uint64_t> historical_block_{};
 
     absl::btree_map<Bytes, BlockHeader> headers_{};
@@ -120,6 +124,8 @@ class Buffer : public StateBuffer {
     absl::btree_map<Bytes, intx::uint256> difficulty_{};
 
     absl::flat_hash_map<evmc::address, std::optional<Account>> accounts_;
+
+    evmc::bytes32 account_storage_root(const evmc::address& address, uint64_t incarnation) const;
 
     // address -> incarnation -> location -> value
     absl::flat_hash_map<evmc::address, absl::btree_map<uint64_t, absl::flat_hash_map<evmc::bytes32, evmc::bytes32>>>
@@ -141,4 +147,4 @@ class Buffer : public StateBuffer {
 
 }  // namespace silkworm::db
 
-#endif  // SILKWORM_DB_BUFFER_H_
+#endif  // SILKWORM_DB_BUFFER_HPP_

@@ -21,11 +21,12 @@
 // Currently it's unstable and is likely to change.
 // Used for https://torquem.ch/eth_tests.html
 
-#include <evmc/evmc.h>
 #include <stdbool.h>
 #include <stdint.h>
 
+#include <evmc/evmc.h>
 #include <intx/intx.hpp>
+
 #include <silkworm/chain/blockchain.hpp>
 #include <silkworm/common/base.hpp>
 #include <silkworm/state/memory_buffer.hpp>
@@ -55,7 +56,7 @@ SILKWORM_EXPORT const silkworm::ChainConfig* lookup_config(uint64_t chain_id);
 SILKWORM_EXPORT silkworm::ChainConfig* new_config(uint64_t chain_id);
 SILKWORM_EXPORT void delete_config(silkworm::ChainConfig* x);
 
-SILKWORM_EXPORT void config_set_update_block(silkworm::ChainConfig* config, evmc_revision update, uint64_t block);
+SILKWORM_EXPORT void config_set_fork_block(silkworm::ChainConfig* config, evmc_revision fork, uint64_t block);
 
 SILKWORM_EXPORT void config_set_muir_glacier_block(silkworm::ChainConfig* config, uint64_t block);
 
@@ -70,8 +71,7 @@ SILKWORM_EXPORT void delete_transaction(silkworm::Transaction* x);
 
 SILKWORM_EXPORT bool check_intrinsic_gas(const silkworm::Transaction* txn, bool homestead, bool istanbul);
 
-// 0 chain_id means pre EIP-155
-SILKWORM_EXPORT const uint8_t* recover_sender(silkworm::Transaction* txn, bool homestead, uint64_t chain_id);
+SILKWORM_EXPORT const uint8_t* recover_sender(silkworm::Transaction* txn);
 
 SILKWORM_EXPORT void keccak256(uint8_t* out, const silkworm::Bytes* in);
 
@@ -93,7 +93,7 @@ SILKWORM_EXPORT uint64_t header_number(const silkworm::BlockHeader* header);
 
 SILKWORM_EXPORT uint8_t* header_state_root(silkworm::BlockHeader* header);
 
-SILKWORM_EXPORT void block_recover_senders(silkworm::Block* b, const silkworm::ChainConfig* config);
+SILKWORM_EXPORT void block_recover_senders(silkworm::Block* b);
 
 SILKWORM_EXPORT silkworm::MemoryBuffer* new_state();
 SILKWORM_EXPORT void delete_state(silkworm::MemoryBuffer* x);

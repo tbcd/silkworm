@@ -14,17 +14,17 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_COMMON_UTIL_H_
-#define SILKWORM_COMMON_UTIL_H_
-
-#ifdef _MSC_VER
-#include <intrin.h>
-#endif
+#ifndef SILKWORM_COMMON_UTIL_HPP_
+#define SILKWORM_COMMON_UTIL_HPP_
 
 #include <cstring>
-#include <ethash/keccak.hpp>
 #include <optional>
+#include <vector>
+
+#include <ethash/keccak.hpp>
+
 #include <silkworm/common/base.hpp>
+#include <silkworm/common/cast.hpp>
 
 namespace silkworm {
 
@@ -66,9 +66,7 @@ inline ByteView full_view(const evmc::bytes32& hash) { return {hash.bytes, kHash
 // Leading zero bytes are stripped
 ByteView zeroless_view(const evmc::bytes32& hash);
 
-inline ByteView byte_view_of_c_str(const char* str) {
-    return {reinterpret_cast<const uint8_t*>(str), std::strlen(str)};
-}
+inline ByteView byte_view_of_c_str(const char* str) { return {byte_ptr_cast(str), std::strlen(str)}; }
 
 std::string to_hex(const evmc::address& address);
 std::string to_hex(const evmc::bytes32& hash);
@@ -80,23 +78,20 @@ std::optional<Bytes> from_hex(std::string_view hex) noexcept;
 // human readable format with qualifiers. eg "256MB"
 std::optional<uint64_t> parse_size(const std::string& sizestr);
 
-// TODO[C++20] replace by starts_with
-inline bool has_prefix(ByteView s, ByteView prefix) { return s.substr(0, prefix.size()) == prefix; }
+// Converts a number of bytes in a human readable format
+std::string human_size(uint64_t bytes);
+
+// Compares two strings for equality with case insensitivity
+bool iequals(const std::string& a, const std::string& b);
 
 // The length of the longest common prefix of a and b.
 size_t prefix_length(ByteView a, ByteView b);
 
-// TODO[C++20] replace by std::popcount
-inline int popcount(unsigned x) {
-#ifdef _MSC_VER
-    return __popcnt(x);
-#else
-    return __builtin_popcount(x);
-#endif
-}
-
 inline ethash::hash256 keccak256(ByteView view) { return ethash::keccak256(view.data(), view.size()); }
+
+// Splits a string by delimiter and returns a vector of tokens
+std::vector<std::string> split(std::string source, std::string delimiter);
 
 }  // namespace silkworm
 
-#endif  // SILKWORM_COMMON_UTIL_H_
+#endif  // SILKWORM_COMMON_UTIL_HPP_

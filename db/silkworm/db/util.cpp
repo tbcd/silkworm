@@ -16,29 +16,24 @@
 
 #include "util.hpp"
 
-#include <boost/endian/conversion.hpp>
 #include <cassert>
 #include <cstdlib>
 #include <cstring>
+
+#include <boost/endian/conversion.hpp>
 #include <intx/int128.hpp>
+
+#include <silkworm/common/rlp_err.hpp>
 #include <silkworm/common/util.hpp>
-#include <silkworm/rlp/decode.hpp>
 #include <silkworm/rlp/encode.hpp>
 
 namespace silkworm::db {
 
-Bytes storage_prefix(const evmc::address& address, uint64_t incarnation) {
-    Bytes res(kStoragePrefixLength, '\0');
-    std::memcpy(&res[0], address.bytes, kAddressLength);
-    boost::endian::store_big_u64(&res[kAddressLength], incarnation);
+Bytes storage_prefix(ByteView address, uint64_t incarnation) {
+    Bytes res(address.length() + kIncarnationLength, '\0');
+    std::memcpy(&res[0], address.data(), address.length());
+    boost::endian::store_big_u64(&res[address.length()], incarnation);
     return res;
-}
-
-Bytes header_hash_key(uint64_t block_number) {
-    Bytes key(8 + 1, '\0');
-    boost::endian::store_big_u64(&key[0], block_number);
-    key[8] = 'n';
-    return key;
 }
 
 Bytes block_key(uint64_t block_number) {
@@ -51,14 +46,6 @@ Bytes block_key(uint64_t block_number, const uint8_t (&hash)[kHashLength]) {
     Bytes key(8 + kHashLength, '\0');
     boost::endian::store_big_u64(&key[0], block_number);
     std::memcpy(&key[8], hash, kHashLength);
-    return key;
-}
-
-Bytes total_difficulty_key(uint64_t block_number, const uint8_t (&hash)[kHashLength]) {
-    Bytes key(8 + kHashLength + 1, '\0');
-    boost::endian::store_big_u64(&key[0], block_number);
-    std::memcpy(&key[8], hash, kHashLength);
-    key[8 + kHashLength] = 't';
     return key;
 }
 
@@ -92,48 +79,16 @@ Bytes log_key(uint64_t block_number, uint32_t transaction_id) {
     return key;
 }
 
-// See Turbo-Geth DefaultDataDir
-std::string default_path() {
-    std::string base_dir{};
-
-    const char* env{std::getenv("XDG_DATA_HOME")};
-    if (env) {
-        base_dir = env;
-    } else {
-        env = std::getenv("APPDATA");
-        if (env) {
-            base_dir = env;
-        }
+std::optional<ByteView> find_value_suffix(mdbx::cursor& table, ByteView key, ByteView value_prefix) {
+    auto prefix_slice{to_slice(value_prefix)};
+    auto data{table.lower_bound_multivalue(to_slice(key), prefix_slice, /*throw_notfound*/ false)};
+    if (!data || !data.value.starts_with(prefix_slice)) {
+        return std::nullopt;
     }
 
-    if (base_dir.empty()) {
-#if defined(_WIN32)
-        /* Should not happen */
-        return base_dir;
-#else
-        env = std::getenv("HOME");
-        if (!env) {
-            return base_dir;
-        }
-#endif
-        std::string home_dir{env};
-
-#ifdef _WIN32
-        base_dir = home_dir;
-#elif __APPLE__
-        base_dir = home_dir + "/Library";
-#else
-        base_dir = home_dir + "/.local/share";
-#endif
-    }
-
-#if defined(_WIN32) || defined(__APPLE__)
-    base_dir += "/TurboGeth";
-#else
-    base_dir += "/turbogeth";
-#endif
-
-    return base_dir + "/tg/chaindata";
+    ByteView res{from_slice(data.value)};
+    res.remove_prefix(value_prefix.length());
+    return res;
 }
 
 namespace detail {
@@ -151,24 +106,18 @@ namespace detail {
         return to;
     }
 
-    static void check_rlp_err(rlp::DecodingResult err) {
-        if (err != rlp::DecodingResult::kOk) {
-            throw err;
-        }
-    }
-
     BlockBodyForStorage decode_stored_block_body(ByteView& from) {
         auto [header, err]{rlp::decode_header(from)};
-        check_rlp_err(err);
+        rlp::err_handler(err);
         if (!header.list) {
-            throw rlp::DecodingResult::kUnexpectedString;
+            rlp::err_handler(rlp::DecodingResult::kUnexpectedString);
         }
         uint64_t leftover{from.length() - header.payload_length};
 
         BlockBodyForStorage to;
-        check_rlp_err(rlp::decode(from, to.base_txn_id));
-        check_rlp_err(rlp::decode(from, to.txn_count));
-        check_rlp_err(rlp::decode_vector(from, to.ommers));
+        rlp::err_handler(rlp::decode(from, to.base_txn_id));
+        rlp::err_handler(rlp::decode(from, to.txn_count));
+        rlp::err_handler(rlp::decode_vector(from, to.ommers));
 
         if (from.length() != leftover) {
             throw rlp::DecodingResult::kListLengthMismatch;

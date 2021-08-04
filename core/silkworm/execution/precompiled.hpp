@@ -1,5 +1,5 @@
 /*
-   Copyright 2020 The Silkworm Authors
+   Copyright 2020-2021 The Silkworm Authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -14,12 +14,13 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_EXECUTION_PRECOMPILED_H_
-#define SILKWORM_EXECUTION_PRECOMPILED_H_
+#ifndef SILKWORM_EXECUTION_PRECOMPILED_HPP_
+#define SILKWORM_EXECUTION_PRECOMPILED_HPP_
+
+#include <optional>
 
 #include <evmc/evmc.h>
 
-#include <optional>
 #include <silkworm/common/base.hpp>
 
 // See Yellow Paper, Appendix E "Precompiled Contracts"
@@ -45,8 +46,9 @@ std::optional<Bytes> rip160_run(ByteView input) noexcept;
 uint64_t id_gas(ByteView input, evmc_revision) noexcept;
 std::optional<Bytes> id_run(ByteView input) noexcept;
 
-// https://eips.ethereum.org/EIPS/eip-198
+// https://eips.ethereum.org/EIPS/eip-2565
 uint64_t expmod_gas(ByteView input, evmc_revision) noexcept;
+// https://eips.ethereum.org/EIPS/eip-198
 std::optional<Bytes> expmod_run(ByteView input) noexcept;
 
 // https://eips.ethereum.org/EIPS/eip-196
@@ -79,4 +81,4 @@ static_assert(std::size(kContracts) == kNumOfIstanbulContracts);
 
 }  // namespace silkworm::precompiled
 
-#endif  // SILKWORM_EXECUTION_PRECOMPILED_H_
+#endif  // SILKWORM_EXECUTION_PRECOMPILED_HPP_

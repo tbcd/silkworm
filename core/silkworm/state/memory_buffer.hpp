@@ -14,12 +14,13 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_STATE_MEMORY_BUFFER_H_
-#define SILKWORM_STATE_MEMORY_BUFFER_H_
+#ifndef SILKWORM_STATE_MEMORY_BUFFER_HPP_
+#define SILKWORM_STATE_MEMORY_BUFFER_HPP_
 
-#include <silkworm/state/buffer.hpp>
 #include <unordered_map>
 #include <vector>
+
+#include <silkworm/state/buffer.hpp>
 
 namespace silkworm {
 
@@ -28,7 +29,7 @@ class MemoryBuffer : public StateBuffer {
   public:
     std::optional<Account> read_account(const evmc::address& address) const noexcept override;
 
-    Bytes read_code(const evmc::bytes32& code_hash) const noexcept override;
+    ByteView read_code(const evmc::bytes32& code_hash) const noexcept override;
 
     evmc::bytes32 read_storage(const evmc::address& address, uint64_t incarnation,
                                const evmc::bytes32& location) const noexcept override;
@@ -113,4 +114,4 @@ class MemoryBuffer : public StateBuffer {
 
 }  // namespace silkworm
 
-#endif  // SILKWORM_STATE_MEMORY_BUFFER_H_
+#endif  // SILKWORM_STATE_MEMORY_BUFFER_HPP_

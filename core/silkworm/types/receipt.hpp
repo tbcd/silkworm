@@ -1,5 +1,5 @@
 /*
-   Copyright 2020 The Silkworm Authors
+   Copyright 2020-2021 The Silkworm Authors
 
    Licensed under the Apache License, Version 2.0 (the "License");
    you may not use this file except in compliance with the License.
@@ -14,15 +14,19 @@
    limitations under the License.
 */
 
-#ifndef SILKWORM_TYPES_RECEIPT_H_
-#define SILKWORM_TYPES_RECEIPT_H_
+#ifndef SILKWORM_TYPES_RECEIPT_HPP_
+#define SILKWORM_TYPES_RECEIPT_HPP_
+
+#include <optional>
 
 #include <silkworm/types/bloom.hpp>
 #include <silkworm/types/log.hpp>
+#include <silkworm/types/transaction.hpp>
 
 namespace silkworm {
 
 struct Receipt {
+    Transaction::Type type{Transaction::Type::kLegacy};
     bool success{false};
     uint64_t cumulative_gas_used{0};
     Bloom bloom;
@@ -31,4 +35,4 @@ struct Receipt {
 
 }  // namespace silkworm
 
-#endif  // SILKWORM_TYPES_RECEIPT_H_
+#endif  // SILKWORM_TYPES_RECEIPT_HPP_
