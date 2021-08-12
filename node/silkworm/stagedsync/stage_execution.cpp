@@ -37,7 +37,7 @@ static StageResult execute_batch_of_blocks(mdbx::txn& txn, const ChainConfig& co
                                            uint64_t& block_num) noexcept {
     try {
         db::Buffer buffer{txn};
-        AnalysisCache analysis_cache;
+        AnalysisCache<evmone::AdvancedCodeAnalysis> analysis_cache;
         ExecutionStatePool state_pool;
         std::vector<Receipt> receipts;
 

@@ -22,10 +22,6 @@
 #include <silkworm/common/base.hpp>
 #include <silkworm/common/lru_cache.hpp>
 
-namespace evmone {
-struct AdvancedCodeAnalysis;
-}
-
 namespace silkworm {
 
 /** @brief Cache of EVM analyses.
@@ -33,6 +29,7 @@ namespace silkworm {
  * Analyses performed for different EVM revisions do not coexist in the cache
  * and all other revisions are evicted on revision update.
  */
+template <typename Analysis>
 class AnalysisCache {
   public:
     static constexpr size_t kDefaultMaxSize{5'000};
@@ -45,16 +42,30 @@ class AnalysisCache {
     /** @brief Gets an EVM analysis from the cache.
      * A nullptr is returned if there's nothing in the cache for this key & revision.
      */
-    std::shared_ptr<evmone::AdvancedCodeAnalysis> get(const evmc::bytes32& key, evmc_revision revision) noexcept;
+    std::shared_ptr<Analysis> get(const evmc::bytes32& key, evmc_revision revision) noexcept {
+        if (revision_ == revision) {
+            const auto* ptr{cache_.get(key)};
+            return ptr ? *ptr : nullptr;
+        } else {
+            return nullptr;
+        }
+    }
 
     /** @brief Puts an EVM analysis into the cache.
      * All cache entries for other EVM revisions are evicted.
      */
-    void put(const evmc::bytes32& key, const std::shared_ptr<evmone::AdvancedCodeAnalysis>& analysis,
-             evmc_revision revision) noexcept;
+    void put(const evmc::bytes32& key, const std::shared_ptr<Analysis>& analysis, evmc_revision revision) noexcept {
+        if (revision_ != revision) {
+            // multiple revisions are not supported
+            cache_.clear();
+        }
+        revision_ = revision;
+
+        cache_.put(key, analysis);
+    }
 
   private:
-    lru_cache<evmc::bytes32, std::shared_ptr<evmone::AdvancedCodeAnalysis>> cache_;
+    lru_cache<evmc::bytes32, std::shared_ptr<Analysis>> cache_;
     evmc_revision revision_{EVMC_MAX_REVISION};
 };
 

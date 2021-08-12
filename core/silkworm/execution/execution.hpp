@@ -19,6 +19,8 @@
 
 #include <stdexcept>
 
+#include <evmone/analysis.hpp>
+
 #include <silkworm/chain/config.hpp>
 #include <silkworm/chain/validity.hpp>
 #include <silkworm/execution/analysis_cache.hpp>
@@ -42,7 +44,8 @@ namespace silkworm {
  * For better performance use AnalysisCache & ExecutionStatePool.
  */
 [[nodiscard]] ValidationResult execute_block(const Block& block, StateBuffer& buffer, const ChainConfig& config,
-                                             std::vector<Receipt>& out, AnalysisCache* analysis_cache = nullptr,
+                                             std::vector<Receipt>& out,
+                                             AnalysisCache<evmone::AdvancedCodeAnalysis>* analysis_cache = nullptr,
                                              ExecutionStatePool* state_pool = nullptr,
                                              evmc_vm* exo_evm = nullptr) noexcept;
 

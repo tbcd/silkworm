@@ -81,7 +81,7 @@ int main(int argc, char* argv[]) {
             throw std::runtime_error("Unable to retrieve chain config");
         }
 
-        AnalysisCache analysis_cache;
+        AnalysisCache<evmone::AdvancedCodeAnalysis> analysis_cache;
         ExecutionStatePool state_pool;
         std::vector<Receipt> receipts;
 
