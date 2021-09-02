@@ -163,14 +163,6 @@ ValidationResult validate_block_header(const BlockHeader& header, const State& s
         return ValidationResult::kWrongDifficulty;
     }
 
-    // https://eips.ethereum.org/EIPS/eip-779
-    if (config.dao_block && *config.dao_block <= header.number && header.number <= *config.dao_block + 9) {
-        static const Bytes kDaoExtraData{*from_hex("0x64616f2d686172642d666f726b")};
-        if (header.extra_data != kDaoExtraData) {
-            return ValidationResult::kWrongDaoExtraData;
-        }
-    }
-
     if (header.base_fee_per_gas != expected_base_fee_per_gas(header, *parent, config)) {
         return ValidationResult::kWrongBaseFee;
     }

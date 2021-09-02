@@ -54,6 +54,9 @@ static const std::vector<fs::path> kExcludedTests{
     // Very slow tests
     kBlockchainDir / "GeneralStateTests" / "stTimeConsuming",
 
+    // Do not support extra data checks
+    kBlockchainDir / "TransitionTests" / "bcHomesteadToDao",
+
     // Nonce >= 2^64 is not supported.
     // Geth excludes this test as well:
     // https://github.com/ethereum/go-ethereum/blob/v1.9.25/tests/transaction_test.go#L40
