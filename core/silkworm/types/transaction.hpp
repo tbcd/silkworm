@@ -35,16 +35,16 @@ struct AccessListEntry {
 
 bool operator==(const AccessListEntry& a, const AccessListEntry& b);
 
-struct Transaction {
-    // EIP-2718 transaction type
-    // https://github.com/ethereum/eth1.0-specs/tree/master/lists/signature-types
-    enum class Type : uint8_t {
-        kLegacy = 0,
-        kEip2930 = 1,
-        kEip1559 = 2,
-    };
+// EIP-2718 transaction type
+// https://github.com/ethereum/eth1.0-specs/tree/master/lists/signature-types
+enum class TransactionType : uint8_t {
+    kLegacy = 0,
+    kEip2930 = 1,
+    kEip1559 = 2,
+};
 
-    Type type{Type::kLegacy};
+struct Transaction {
+    TransactionType type{TransactionType::kLegacy};
 
     uint64_t nonce{0};
     intx::uint256 max_priority_fee_per_gas{0};

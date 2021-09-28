@@ -57,7 +57,7 @@ TEST_CASE("Prune Execution without prune function") {
 
     static constexpr auto kEncoder = [](Bytes& to, const Receipt& r) { rlp::encode(to, r); };
     std::vector<Receipt> receipts{
-        {Transaction::Type::kEip1559, true, block.header.gas_used, {}, {}},
+        {TransactionType::kEip1559, true, block.header.gas_used, {}, {}},
     };
     block.header.receipts_root = trie::root_hash(receipts, kEncoder);
 
@@ -70,7 +70,7 @@ TEST_CASE("Prune Execution without prune function") {
     block.transactions.resize(1);
     block.transactions[0].data = deployment_code;
     block.transactions[0].gas_limit = block.header.gas_limit;
-    block.transactions[0].type = Transaction::Type::kEip1559;
+    block.transactions[0].type = TransactionType::kEip1559;
     block.transactions[0].max_priority_fee_per_gas = 0;
     block.transactions[0].max_fee_per_gas = 20 * kGiga;
 
@@ -126,12 +126,12 @@ TEST_CASE("Prune Execution without prune function") {
     REQUIRE(execute_block(block, buffer, test::kLondonConfig) == ValidationResult::kOk);
 
     db::stages::set_stage_progress(*txn, db::stages::kExecutionKey, 3);
-    // We keep chain from Block 2 onwards (Aka, we delete block 1 changesets and receipts)
+    // We keep chain from Block 2 onwards (Aka, we delete block 1 change sets and receipts)
     buffer.write_to_db();
 
     auto account_changeset_table{db::open_cursor(*txn, db::table::kAccountChangeSet)};
     auto storage_changeset_table{db::open_cursor(*txn, db::table::kStorageChangeSet)};
-    // Check wheter we start from Block 2 and not block 1
+    // Check whether we start from Block 2 and not block 1
     auto account_changeset_tail{db::from_slice(account_changeset_table.to_first().key)};
     auto storage_changeset_tail{db::from_slice(storage_changeset_table.to_first().key)};
 
@@ -167,7 +167,7 @@ TEST_CASE("Prune Execution with prune function") {
 
     static constexpr auto kEncoder = [](Bytes& to, const Receipt& r) { rlp::encode(to, r); };
     std::vector<Receipt> receipts{
-        {Transaction::Type::kEip1559, true, block.header.gas_used, {}, {}},
+        {TransactionType::kEip1559, true, block.header.gas_used, {}, {}},
     };
     block.header.receipts_root = trie::root_hash(receipts, kEncoder);
 
@@ -180,7 +180,7 @@ TEST_CASE("Prune Execution with prune function") {
     block.transactions.resize(1);
     block.transactions[0].data = deployment_code;
     block.transactions[0].gas_limit = block.header.gas_limit;
-    block.transactions[0].type = Transaction::Type::kEip1559;
+    block.transactions[0].type = TransactionType::kEip1559;
     block.transactions[0].max_priority_fee_per_gas = 0;
     block.transactions[0].max_fee_per_gas = 20 * kGiga;
 
@@ -242,7 +242,7 @@ TEST_CASE("Prune Execution with prune function") {
 
     auto account_changeset_table{db::open_cursor(*txn, db::table::kAccountChangeSet)};
     auto storage_changeset_table{db::open_cursor(*txn, db::table::kStorageChangeSet)};
-    // Check wheter we start from Block 2 and not block 1
+    // Check whether we start from Block 2 and not block 1
     auto account_changeset_tail{db::from_slice(account_changeset_table.to_first().key)};
     auto storage_changeset_tail{db::from_slice(storage_changeset_table.to_first().key)};
 

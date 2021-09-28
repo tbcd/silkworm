@@ -60,7 +60,7 @@ TEST_CASE("Unwind Execution") {
 
     static constexpr auto kEncoder = [](Bytes& to, const Receipt& r) { rlp::encode(to, r); };
     std::vector<Receipt> receipts{
-        {Transaction::Type::kEip1559, true, block.header.gas_used, {}, {}},
+        {TransactionType::kEip1559, true, block.header.gas_used, {}, {}},
     };
     block.header.receipts_root = trie::root_hash(receipts, kEncoder);
 
@@ -73,7 +73,7 @@ TEST_CASE("Unwind Execution") {
     block.transactions.resize(1);
     block.transactions[0].data = deployment_code;
     block.transactions[0].gas_limit = block.header.gas_limit;
-    block.transactions[0].type = Transaction::Type::kEip1559;
+    block.transactions[0].type = TransactionType::kEip1559;
     block.transactions[0].max_priority_fee_per_gas = 0;
     block.transactions[0].max_fee_per_gas = 20 * kGiga;
 

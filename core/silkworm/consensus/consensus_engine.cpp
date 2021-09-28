@@ -37,15 +37,15 @@ ValidationResult pre_validate_transaction(const Transaction& txn, uint64_t block
         }
     }
 
-    if (txn.type == Transaction::Type::kEip2930) {
+    if (txn.type == TransactionType::kEip2930) {
         if (rev < EVMC_BERLIN) {
             return ValidationResult::kUnsupportedTransactionType;
         }
-    } else if (txn.type == Transaction::Type::kEip1559) {
+    } else if (txn.type == TransactionType::kEip1559) {
         if (rev < EVMC_LONDON) {
             return ValidationResult::kUnsupportedTransactionType;
         }
-    } else if (txn.type != Transaction::Type::kLegacy) {
+    } else if (txn.type != TransactionType::kLegacy) {
         return ValidationResult::kUnsupportedTransactionType;
     }
 
