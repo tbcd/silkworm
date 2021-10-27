@@ -222,7 +222,7 @@ TEST_CASE("Account and storage trie") {
     const Account a3{0, 2 * kEther, code_hash, kDefaultIncarnation};
     hashed_accounts.upsert(mdbx::slice{key3.bytes, kHashLength}, db::to_slice(a3.encode_for_storage()));
 
-    Bytes storage_key{db::storage_prefix(full_view(key3.bytes), kDefaultIncarnation)};
+    const Bytes storage_key{db::storage_prefix(full_view(key3.bytes), kDefaultIncarnation)};
     const evmc::bytes32 storage_root{setup_storage(txn, storage_key)};
 
     hb.add_leaf(unpack_nibbles(full_view(key3.bytes)), a3.rlp(storage_root));
@@ -332,7 +332,9 @@ TEST_CASE("Account and storage trie") {
 
     SECTION("Delete an account") {
         hashed_accounts.erase(mdbx::slice{key2.bytes, kHashLength});
-        account_change_table.upsert(db::to_slice(db::block_key(2)), db::to_slice(address2));
+        Bytes change_acc2{full_view(address2)};
+        change_acc2.append(a2.encode_for_storage());
+        account_change_table.upsert(db::to_slice(db::block_key(2)), db::to_slice(change_acc2));
 
         increment_intermediate_hashes(txn, context.dir().etl().path(), /*from=*/1);
 
@@ -354,10 +356,14 @@ TEST_CASE("Account and storage trie") {
 
     SECTION("Delete several accounts") {
         hashed_accounts.erase(mdbx::slice{key2.bytes, kHashLength});
-        account_change_table.upsert(db::to_slice(db::block_key(2)), db::to_slice(address2));
+        Bytes change_acc2{full_view(address2)};
+        change_acc2.append(a2.encode_for_storage());
+        account_change_table.upsert(db::to_slice(db::block_key(2)), db::to_slice(change_acc2));
 
         hashed_accounts.erase(mdbx::slice{key3.bytes, kHashLength});
-        account_change_table.upsert(db::to_slice(db::block_key(2)), db::to_slice(address3));
+        Bytes change_acc3{full_view(address3)};
+        change_acc3.append(a3.encode_for_storage());
+        account_change_table.upsert(db::to_slice(db::block_key(2)), db::to_slice(change_acc3));
 
         increment_intermediate_hashes(txn, context.dir().etl().path(), /*from=*/1);
 
@@ -374,6 +380,9 @@ TEST_CASE("Account and storage trie") {
         REQUIRE(node1c.hashes().size() == 2);
         CHECK(node1b.hashes()[1] == node1c.hashes()[0]);
         CHECK(node1b.hashes()[2] == node1c.hashes()[1]);
+
+        node_map = read_all_nodes(storage_trie);
+        CHECK(node_map.empty());
     }
 }
 
