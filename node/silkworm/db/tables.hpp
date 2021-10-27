@@ -30,7 +30,10 @@ namespace silkworm::db::table {
 constexpr const char* kLastHeaderKey = "LastHeader";
 
 /* Canonical tables */
+
+// block_num_u64 (BE) -> address + account (encoded)
 constexpr db::MapConfig kAccountChangeSet{"AccountChangeSet", ::mdbx::key_mode::usual, ::mdbx::value_mode::multi};
+
 constexpr db::MapConfig kAccountHistory{"AccountHistory"};
 constexpr db::MapConfig kBlockBodies{"BlockBody"};
 
@@ -68,7 +71,10 @@ constexpr db::MapConfig kSenders{"TxSender"};
 constexpr db::MapConfig kSequence{"Sequence"};
 constexpr db::MapConfig kSnapshotInfo{"SnapshotInfo"};
 constexpr db::MapConfig kStateSnapshotInfo{"StateSnapshotInfo"};
+
+// block_num_u64 (BE) + address + incarnation_u64 (BE) -> plain_storage_location (32 bytes) + zeroless_value
 constexpr db::MapConfig kStorageChangeSet{"StorageChangeSet", ::mdbx::key_mode::usual, ::mdbx::value_mode::multi};
+
 constexpr db::MapConfig kStorageHistory{"StorageHistory"};
 constexpr db::MapConfig kSyncStageProgress{"SyncStage"};      // Progress for stages
 constexpr db::MapConfig kSyncStageUnwind{"SyncStageUnwind"};  // Unwind point for stages
