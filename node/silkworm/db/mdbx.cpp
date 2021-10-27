@@ -18,30 +18,21 @@
 
 namespace silkworm::db {
 
-namespace detail {
-
-    //! \brief Returns data of current cursor position or moves it to the beginning or the end of the table based on
-    //! provided direction if the cursor is not positioned.
-    //! \param [in] c : A reference to an open cursor
-    //! \param [in] d : Direction cursor should have \return ::mdbx::cursor::move_result
-    static inline ::mdbx::cursor::move_result adjust_cursor_position_if_unpositioned_and_return_data(
-        ::mdbx::cursor& c, CursorMoveDirection d) {
-        // Warning: eof() is not exactly what we need here since it returns true not only for cursors
-        // that are not positioned, but also for those pointing to the end of data.
-        // Unfortunately, there's no MDBX API to differentiate the two.
-        if (c.eof()) {
-            return (d == CursorMoveDirection::Forward) ? c.to_first(/*throw_notfound=*/false)
-                                                       : c.to_last(/*throw_notfound=*/false);
-        }
-        return c.current(/*throw_notfound=*/false);
+//! \brief Returns data of current cursor position or moves it to the beginning or the end of the table based on
+//! provided direction if the cursor is not positioned.
+//! \param [in] c : A reference to an open cursor
+//! \param [in] d : Direction cursor should have \return ::mdbx::cursor::move_result
+static inline ::mdbx::cursor::move_result adjust_cursor_position_if_unpositioned_and_return_data(
+    ::mdbx::cursor& c, CursorMoveDirection d) {
+    // Warning: eof() is not exactly what we need here since it returns true not only for cursors
+    // that are not positioned, but also for those pointing to the end of data.
+    // Unfortunately, there's no MDBX API to differentiate the two.
+    if (c.eof()) {
+        return (d == CursorMoveDirection::Forward) ? c.to_first(/*throw_notfound=*/false)
+                                                   : c.to_last(/*throw_notfound=*/false);
     }
-
-    static bool cursor_erase_data(::mdbx::cursor& cursor, ::mdbx::cursor::move_result& data) {
-        (void)data;
-        return cursor.erase();
-    }
-
-}  // namespace detail
+    return c.current(/*throw_notfound=*/false);
+}
 
 ::mdbx::env_managed open_env(const EnvConfig& config) {
     namespace fs = std::filesystem;
@@ -162,7 +153,7 @@ size_t cursor_for_each(::mdbx::cursor& cursor, const WalkFunc& walker, const Cur
                                                           : mdbx::cursor::move_operation::previous};
 
     size_t ret{0};
-    auto data{detail::adjust_cursor_position_if_unpositioned_and_return_data(cursor, direction)};
+    auto data{adjust_cursor_position_if_unpositioned_and_return_data(cursor, direction)};
     while (data.done) {
         ++ret;
         if (!walker(cursor, data)) {
@@ -179,7 +170,7 @@ size_t cursor_for_count(::mdbx::cursor& cursor, const WalkFunc& walker, size_t c
                                                           ? mdbx::cursor::move_operation::next
                                                           : mdbx::cursor::move_operation::previous};
     size_t ret{0};
-    auto data{detail::adjust_cursor_position_if_unpositioned_and_return_data(cursor, direction)};
+    auto data{adjust_cursor_position_if_unpositioned_and_return_data(cursor, direction)};
     while (count && data.done) {
         ++ret;
         --count;
@@ -191,11 +182,25 @@ size_t cursor_for_count(::mdbx::cursor& cursor, const WalkFunc& walker, size_t c
     return ret;
 }
 
-size_t cursor_erase(mdbx::cursor& cursor, const CursorMoveDirection direction) {
-    return cursor_for_each(cursor, detail::cursor_erase_data, direction);
+size_t cursor_for_prefix(::mdbx::cursor& cursor, ByteView prefix, const WalkFunc& walker) {
+    const auto prefix_slice{to_slice(prefix)};
+    size_t ret{0};
+    auto data{cursor.lower_bound(prefix_slice, /*throw_notfound=*/false)};
+    while (data && data.value.starts_with(prefix_slice)) {
+        ++ret;
+        if (!walker(cursor, data)) {
+            break;  // Walker function has returned false hence stop
+        }
+        data = cursor.to_next(/*throw_notfound=*/false);
+    }
+    return ret;
 }
 
-size_t cursor_erase(mdbx::cursor& cursor, const ByteView& set_key, const CursorMoveDirection direction) {
+size_t cursor_erase(mdbx::cursor& cursor, const CursorMoveDirection direction) {
+    return cursor_for_each(cursor, erasing_walk_func, direction);
+}
+
+size_t cursor_erase(mdbx::cursor& cursor, const ByteView set_key, const CursorMoveDirection direction) {
     // Search lower bound key
     if (!cursor.lower_bound(to_slice(set_key), false)) {
         return 0;
@@ -204,14 +209,14 @@ size_t cursor_erase(mdbx::cursor& cursor, const ByteView& set_key, const CursorM
     if (direction == CursorMoveDirection::Reverse && !cursor.to_previous(false)) {
         return 0;
     }
-    return cursor_for_each(cursor, detail::cursor_erase_data, direction);
+    return cursor_for_each(cursor, erasing_walk_func, direction);
 }
 
 size_t cursor_erase(mdbx::cursor& cursor, size_t max_count, const CursorMoveDirection direction) {
-    return cursor_for_count(cursor, detail::cursor_erase_data, max_count, direction);
+    return cursor_for_count(cursor, erasing_walk_func, max_count, direction);
 }
 
-size_t cursor_erase(mdbx::cursor& cursor, const ByteView& set_key, size_t max_count,
+size_t cursor_erase(mdbx::cursor& cursor, const ByteView set_key, size_t max_count,
                     const CursorMoveDirection direction) {
     // Search lower bound key
     if (!cursor.lower_bound(to_slice(set_key), false)) {
@@ -221,7 +226,7 @@ size_t cursor_erase(mdbx::cursor& cursor, const ByteView& set_key, size_t max_co
     if (direction == CursorMoveDirection::Reverse && !cursor.to_previous(false)) {
         return 0;
     }
-    return cursor_for_count(cursor, detail::cursor_erase_data, max_count, direction);
+    return cursor_for_count(cursor, erasing_walk_func, max_count, direction);
 }
 
 }  // namespace silkworm::db

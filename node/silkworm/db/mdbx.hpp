@@ -39,10 +39,13 @@ constexpr std::string_view kDbDataFileName{"mdbx.dat"};
 constexpr std::string_view kDbLockFileName{"mdbx.lck"};
 
 //! \brief Pointer to a processing function invoked by cursor_for_each & cursor_for_count on each record
-//! \param [in] _cursor : A reference to the cursor
-//! \param [in] _data : The result of recent move operation on the cursor
-//! \remarks Return value signals whether the loop should continue on next record
-using WalkFunc = std::function<bool(::mdbx::cursor& _cursor, ::mdbx::cursor::move_result& _data)>;
+//! \param [in] cursor : A reference to the cursor
+//! \param [in] data : The result of recent move operation on the cursor
+//! \remarks Return value signals whether the loop should continue to the next record (true - continue, false - stop)
+using WalkFunc = std::function<bool(::mdbx::cursor& cursor, ::mdbx::cursor::move_result& data)>;
+
+//! \brief WalkFunc that erases records
+inline bool erasing_walk_func(::mdbx::cursor& cursor, ::mdbx::cursor::move_result&) { return cursor.erase(); }
 
 //! \brief Essential environment settings
 struct EnvConfig {
@@ -102,22 +105,25 @@ static inline std::filesystem::path get_lockfile_path(const std::filesystem::pat
 }
 
 //! \brief Defines the direction of cursor while looping by cursor_for_each or cursor_for_count
-enum class CursorMoveDirection { Forward, Reverse };
+enum class CursorMoveDirection {
+    Forward,
+    Reverse,
+};
 
 //! \brief Executes a function on each record reachable by the provided cursor
 //! \param [in] cursor : A reference to a cursor opened on a map
-//! \param [in] func : A pointer to a std::function with the code to execute on records. Note the return value of the
+//! \param [in] walker : A pointer to a WalkFunc with the code to execute on records. Note the return value of the
 //! function may stop the loop
 //! \param [in] direction : Whether the cursor should navigate records forward (default) or backwards
 //! \return The overall number of processed records
 //! \remarks If the provided cursor is *not* positioned on any record it will be moved to either the beginning or the
 //! end of the table on behalf of the move criteria
-size_t cursor_for_each(::mdbx::cursor& cursor, const WalkFunc& func,
-                       const CursorMoveDirection direction = CursorMoveDirection::Forward);
+size_t cursor_for_each(::mdbx::cursor& cursor, const WalkFunc& walker,
+                       CursorMoveDirection direction = CursorMoveDirection::Forward);
 
 //! \brief Executes a function on each record reachable by the provided cursor up to a max number of iterations
 //! \param [in] cursor : A reference to a cursor opened on a map
-//! \param [in] func : A pointer to a std::function with the code to execute on records. Note the return value of the
+//! \param [in] func : A pointer to a WalkFunc with the code to execute on records. Note the return value of the
 //! function may stop the loop
 //! \param [in] max_count : Max number of iterations
 //! \param [in] direction : Whether the cursor should navigate records forward (default) or backwards
@@ -126,7 +132,9 @@ size_t cursor_for_each(::mdbx::cursor& cursor, const WalkFunc& func,
 //! \remarks If the provided cursor is *not* positioned on any record it will be moved to either the beginning or the
 //! end of the table on behalf of the move criteria
 size_t cursor_for_count(::mdbx::cursor& cursor, const WalkFunc& func, size_t max_count,
-                        const CursorMoveDirection direction = CursorMoveDirection::Forward);
+                        CursorMoveDirection direction = CursorMoveDirection::Forward);
+
+size_t cursor_for_prefix(::mdbx::cursor& cursor, ByteView prefix, const WalkFunc& func);
 
 //! \brief Erases map records by cursor until any record is found
 //! \param [in] cursor : A reference to a cursor opened on a map
@@ -135,7 +143,7 @@ size_t cursor_for_count(::mdbx::cursor& cursor, const WalkFunc& func, size_t max
 //! \remarks If the provided cursor is *not* positioned on any record it will be moved to either the beginning or the
 //! end of the table on behalf of the move criteria.
 //! \warning Might nuke all your table records if not used properly
-size_t cursor_erase(::mdbx::cursor& cursor, const CursorMoveDirection direction = CursorMoveDirection::Forward);
+size_t cursor_erase(::mdbx::cursor& cursor, CursorMoveDirection direction = CursorMoveDirection::Forward);
 
 //! \brief Erases map records by cursor until any record is found
 //! \param [in] cursor : A reference to a cursor opened on a map
@@ -144,8 +152,8 @@ size_t cursor_erase(::mdbx::cursor& cursor, const CursorMoveDirection direction 
 //! \return The overall number of erased records
 //! \remarks When direction is forward all keys greater equal set_key will be deleted. When direction is reverse all
 //! keys lower than set_key will be deleted.
-size_t cursor_erase(::mdbx::cursor& cursor, const silkworm::ByteView& set_key,
-                    const CursorMoveDirection direction = CursorMoveDirection::Forward);
+size_t cursor_erase(::mdbx::cursor& cursor, ByteView set_key,
+                    CursorMoveDirection direction = CursorMoveDirection::Forward);
 
 //! \brief Erases map records by cursor until any record is found or max_count of deletions is reached
 //! \param [in] cursor : A reference to a cursor opened on a map
@@ -154,7 +162,7 @@ size_t cursor_erase(::mdbx::cursor& cursor, const silkworm::ByteView& set_key,
 //! \return The overall number of erased records
 //! \warning Might nuke all your table records if not used properly
 size_t cursor_erase(::mdbx::cursor& cursor, size_t max_count,
-                    const CursorMoveDirection direction = CursorMoveDirection::Forward);
+                    CursorMoveDirection direction = CursorMoveDirection::Forward);
 
 //! \brief Erases map records by cursor until any record is found or max_count of deletions is reached
 //! \param [in] cursor : A reference to a cursor opened on a map
@@ -164,8 +172,8 @@ size_t cursor_erase(::mdbx::cursor& cursor, size_t max_count,
 //! \return The overall number of erased records
 //! \remarks When direction is forward all keys greater equal set_key will be deleted. When direction is reverse all
 //! keys lower than set_key will be deleted.
-size_t cursor_erase(::mdbx::cursor& cursor, const silkworm::ByteView& set_key, size_t max_count,
-                    const CursorMoveDirection direction = CursorMoveDirection::Forward);
+size_t cursor_erase(::mdbx::cursor& cursor, ByteView set_key, size_t max_count,
+                    CursorMoveDirection direction = CursorMoveDirection::Forward);
 
 }  // namespace silkworm::db
 
