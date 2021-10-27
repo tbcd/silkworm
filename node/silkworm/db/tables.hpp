@@ -31,7 +31,7 @@ constexpr const char* kLastHeaderKey = "LastHeader";
 
 /* Canonical tables */
 
-// block_num_u64 (BE) -> address + account (encoded)
+// block_num_u64 (BE) -> address + previous_account (encoded)
 constexpr db::MapConfig kAccountChangeSet{"AccountChangeSet", ::mdbx::key_mode::usual, ::mdbx::value_mode::multi};
 
 constexpr db::MapConfig kAccountHistory{"AccountHistory"};
@@ -72,7 +72,8 @@ constexpr db::MapConfig kSequence{"Sequence"};
 constexpr db::MapConfig kSnapshotInfo{"SnapshotInfo"};
 constexpr db::MapConfig kStateSnapshotInfo{"StateSnapshotInfo"};
 
-// block_num_u64 (BE) + address + incarnation_u64 (BE) -> plain_storage_location (32 bytes) + zeroless_value
+// block_num_u64 (BE) + address + incarnation_u64 (BE) ->
+// plain_storage_location (32 bytes) + previous_value (no leading zeros)
 constexpr db::MapConfig kStorageChangeSet{"StorageChangeSet", ::mdbx::key_mode::usual, ::mdbx::value_mode::multi};
 
 constexpr db::MapConfig kStorageHistory{"StorageHistory"};
